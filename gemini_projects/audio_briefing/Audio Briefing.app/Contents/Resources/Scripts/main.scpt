@@ -12,6 +12,6 @@ on run
         say "That concludes your briefing. Have a great day."
 
     on error errMsg number errNum
-        display dialog "Error: " & errMsg & " (Error Code: " & errNum & ")" with icon caution buttons {"OK"} default button "OK"
+        log "Error: " & errMsg & " (Error Code: " & errNum & ")"
     end try
 end run

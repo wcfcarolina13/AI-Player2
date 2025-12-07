@@ -1,5 +1,17 @@
-try
-    display dialog "Audio Briefing App Launched!" buttons {"OK", "Cancel"} default button "OK" giving up after 30
-on error errMsg number errNum
-    display dialog "Error: " & errMsg & " (Error Code: " & errNum & ")"
-end try
+on run
+    try
+        -- Initial greeting
+        say "Good morning. Here is your audio briefing."
+
+        -- Play bundled audio file
+        set audioPath to (path to resource folder as string) & "briefing_audio.mp3"
+        set posixAudioPath to quoted form of (POSIX path of audioPath)
+        do shell script "afplay " & posixAudioPath
+
+        -- Concluding remark
+        say "That concludes your briefing. Have a great day."
+
+    on error errMsg number errNum
+        display dialog "Error: " & errMsg & " (Error Code: " & errNum & ")" with icon caution buttons {"OK"} default button "OK"
+    end try
+end run

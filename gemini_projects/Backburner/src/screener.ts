@@ -1,0 +1,338 @@
+import { BackburnerDetector } from './backburner-detector.js';
+import { getExchangeInfo, get24hTickers, getKlines } from './mexc-api.js';
+import { DEFAULT_CONFIG, TIMEFRAME_MS, SETUP_EXPIRY_MS } from './config.js';
+import type { Timeframe, BackburnerSetup, SymbolInfo, ScreenerConfig } from './types.js';
+
+export interface ScreenerEvents {
+  onNewSetup?: (setup: BackburnerSetup) => void;
+  onSetupUpdated?: (setup: BackburnerSetup) => void;
+  onSetupRemoved?: (setup: BackburnerSetup) => void;
+  onScanProgress?: (completed: number, total: number, phase: string) => void;
+  onError?: (error: Error, symbol?: string) => void;
+}
+
+/**
+ * Real-time Backburner Screener
+ *
+ * Continuously scans all MEXC assets for Backburner setups
+ * and maintains an up-to-date list of candidates.
+ */
+export class BackburnerScreener {
+  private detector: BackburnerDetector;
+  private config: ScreenerConfig;
+  private events: ScreenerEvents;
+  private isRunning = false;
+  private scanInterval: ReturnType<typeof setInterval> | null = null;
+  private eligibleSymbols: string[] = [];
+  private lastFullScan: Map<Timeframe, number> = new Map();
+  private previousSetups: Map<string, BackburnerSetup> = new Map();
+
+  constructor(config?: Partial<ScreenerConfig>, events?: ScreenerEvents) {
+    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.events = events || {};
+    this.detector = new BackburnerDetector(this.config);
+  }
+
+  /**
+   * Start the screener
+   */
+  async start(): Promise<void> {
+    if (this.isRunning) {
+      throw new Error('Screener is already running');
+    }
+
+    this.isRunning = true;
+
+    // Initial symbol discovery
+    await this.discoverSymbols();
+
+    // Initial full scan
+    await this.runFullScan();
+
+    // Set up continuous scanning
+    this.scanInterval = setInterval(async () => {
+      if (this.isRunning) {
+        await this.runIncrementalScan();
+      }
+    }, this.config.updateIntervalMs);
+  }
+
+  /**
+   * Stop the screener
+   */
+  stop(): void {
+    this.isRunning = false;
+    if (this.scanInterval) {
+      clearInterval(this.scanInterval);
+      this.scanInterval = null;
+    }
+  }
+
+  /**
+   * Discover eligible trading symbols
+   */
+  private async discoverSymbols(): Promise<void> {
+    this.events.onScanProgress?.(0, 1, 'Fetching exchange info...');
+
+    try {
+      // Get all symbols
+      const [exchangeInfo, tickers] = await Promise.all([
+        getExchangeInfo(),
+        get24hTickers(),
+      ]);
+
+      // Create a map of volume by symbol
+      const volumeMap = new Map<string, number>();
+      for (const ticker of tickers) {
+        volumeMap.set(ticker.symbol, parseFloat(ticker.quoteVolume));
+      }
+
+      // Filter symbols
+      this.eligibleSymbols = exchangeInfo
+        .filter((s: SymbolInfo) => this.isEligibleSymbol(s, volumeMap.get(s.symbol) || 0))
+        .map((s: SymbolInfo) => s.symbol);
+
+      this.events.onScanProgress?.(
+        1,
+        1,
+        `Found ${this.eligibleSymbols.length} eligible symbols`
+      );
+    } catch (error) {
+      this.events.onError?.(error as Error);
+      throw error;
+    }
+  }
+
+  /**
+   * Check if a symbol is eligible for screening
+   */
+  private isEligibleSymbol(info: SymbolInfo, volume24h: number): boolean {
+    // Must be actively trading (MEXC uses "1" for enabled)
+    if (info.status !== '1' && info.status !== 'ENABLED') {
+      return false;
+    }
+
+    // Must be USDT pair (most liquid)
+    if (info.quoteAsset !== 'USDT') {
+      return false;
+    }
+
+    // Must meet minimum volume
+    if (volume24h < this.config.minVolume24h) {
+      return false;
+    }
+
+    // Check exclusion patterns
+    for (const pattern of this.config.excludePatterns) {
+      if (pattern.test(info.baseAsset) || pattern.test(info.symbol)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Run a full scan of all symbols across all timeframes
+   */
+  async runFullScan(): Promise<void> {
+    const totalOperations = this.eligibleSymbols.length * this.config.timeframes.length;
+    let completed = 0;
+
+    this.events.onScanProgress?.(0, totalOperations, 'Starting full scan...');
+
+    for (const timeframe of this.config.timeframes) {
+      for (const symbol of this.eligibleSymbols) {
+        if (!this.isRunning) break;
+
+        try {
+          await this.analyzeSymbol(symbol, timeframe);
+        } catch (error) {
+          this.events.onError?.(error as Error, symbol);
+        }
+
+        completed++;
+        if (completed % 50 === 0) {
+          this.events.onScanProgress?.(
+            completed,
+            totalOperations,
+            `Scanning ${timeframe}...`
+          );
+        }
+      }
+
+      this.lastFullScan.set(timeframe, Date.now());
+    }
+
+    this.events.onScanProgress?.(totalOperations, totalOperations, 'Scan complete');
+  }
+
+  /**
+   * Run an incremental scan (only update active setups and check for new ones)
+   */
+  async runIncrementalScan(): Promise<void> {
+    // Get current active setups
+    const activeSetups = this.detector.getActiveSetups();
+
+    // Update existing setups first
+    for (const setup of activeSetups) {
+      try {
+        await this.analyzeSymbol(setup.symbol, setup.timeframe);
+      } catch (error) {
+        this.events.onError?.(error as Error, setup.symbol);
+      }
+    }
+
+    // Check a subset of symbols for new setups (rotating through)
+    const symbolsToCheck = this.getSymbolsForIncrementalCheck();
+
+    for (const timeframe of this.config.timeframes) {
+      for (const symbol of symbolsToCheck) {
+        if (!this.isRunning) break;
+
+        // Skip if already have an active setup
+        const existingSetup = activeSetups.find(
+          s => s.symbol === symbol && s.timeframe === timeframe
+        );
+        if (existingSetup) continue;
+
+        try {
+          await this.analyzeSymbol(symbol, timeframe);
+        } catch (error) {
+          // Silently ignore errors in incremental scan
+        }
+      }
+    }
+
+    // Clean up expired setups
+    this.cleanupExpiredSetups();
+  }
+
+  /**
+   * Get a subset of symbols to check in incremental scan
+   */
+  private getSymbolsForIncrementalCheck(): string[] {
+    // Rotate through symbols to spread the load
+    const now = Date.now();
+    const rotationIndex = Math.floor(now / 60000) % 10; // Change every minute
+
+    return this.eligibleSymbols.filter((_, i) => i % 10 === rotationIndex);
+  }
+
+  /**
+   * Analyze a single symbol on a single timeframe
+   */
+  private async analyzeSymbol(symbol: string, timeframe: Timeframe): Promise<void> {
+    const candles = await getKlines(symbol, timeframe);
+
+    if (candles.length < 50) {
+      return;
+    }
+
+    // Get higher timeframe for trend confirmation
+    let higherTFCandles;
+    if (timeframe === '5m') {
+      try {
+        higherTFCandles = await getKlines(symbol, '1h');
+      } catch {
+        // Ignore - optional
+      }
+    } else if (timeframe === '15m') {
+      try {
+        higherTFCandles = await getKlines(symbol, '4h');
+      } catch {
+        // Ignore - optional
+      }
+    }
+
+    const previousSetup = this.detector.getActiveSetups().find(
+      s => s.symbol === symbol && s.timeframe === timeframe
+    );
+    const previousKey = previousSetup ? `${symbol}-${timeframe}` : null;
+
+    const setup = this.detector.analyzeSymbol(symbol, timeframe, candles, higherTFCandles);
+
+    if (setup) {
+      const key = `${symbol}-${timeframe}`;
+
+      if (setup.state === 'played_out') {
+        // Setup removed
+        if (previousSetup) {
+          this.previousSetups.delete(key);
+          this.events.onSetupRemoved?.(setup);
+        }
+      } else if (!previousKey) {
+        // New setup
+        this.previousSetups.set(key, setup);
+        this.events.onNewSetup?.(setup);
+      } else {
+        // Existing setup updated
+        const prev = this.previousSetups.get(key);
+        if (prev && (prev.state !== setup.state || Math.abs(prev.currentRSI - setup.currentRSI) > 1)) {
+          this.events.onSetupUpdated?.(setup);
+        }
+        this.previousSetups.set(key, setup);
+      }
+    }
+  }
+
+  /**
+   * Clean up setups that have expired based on their timeframe
+   */
+  private cleanupExpiredSetups(): void {
+    const now = Date.now();
+    const activeSetups = this.detector.getActiveSetups();
+
+    for (const setup of activeSetups) {
+      const expiryMs = SETUP_EXPIRY_MS[setup.timeframe];
+      const age = now - setup.detectedAt;
+
+      if (age > expiryMs) {
+        this.detector.removeSetup(setup.symbol, setup.timeframe);
+        this.previousSetups.delete(`${setup.symbol}-${setup.timeframe}`);
+        this.events.onSetupRemoved?.(setup);
+      }
+    }
+  }
+
+  /**
+   * Get all currently active setups
+   */
+  getActiveSetups(): BackburnerSetup[] {
+    return this.detector.getActiveSetups();
+  }
+
+  /**
+   * Get setups filtered by timeframe
+   */
+  getSetupsByTimeframe(timeframe: Timeframe): BackburnerSetup[] {
+    return this.detector.getSetupsByTimeframe(timeframe);
+  }
+
+  /**
+   * Get count of eligible symbols
+   */
+  getEligibleSymbolCount(): number {
+    return this.eligibleSymbols.length;
+  }
+
+  /**
+   * Check if the screener is running
+   */
+  isActive(): boolean {
+    return this.isRunning;
+  }
+
+  /**
+   * Force a refresh of a specific symbol
+   */
+  async refreshSymbol(symbol: string): Promise<void> {
+    for (const timeframe of this.config.timeframes) {
+      try {
+        await this.analyzeSymbol(symbol, timeframe);
+      } catch (error) {
+        this.events.onError?.(error as Error, symbol);
+      }
+    }
+  }
+}

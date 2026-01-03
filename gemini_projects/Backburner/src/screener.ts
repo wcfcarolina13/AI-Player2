@@ -8,6 +8,7 @@ export interface ScreenerEvents {
   onSetupUpdated?: (setup: BackburnerSetup) => void;
   onSetupRemoved?: (setup: BackburnerSetup) => void;
   onScanProgress?: (completed: number, total: number, phase: string) => void;
+  onScanStatus?: (status: string) => void;
   onError?: (error: Error, symbol?: string) => void;
 }
 
@@ -139,9 +140,15 @@ export class BackburnerScreener {
     const totalOperations = this.eligibleSymbols.length * this.config.timeframes.length;
     let completed = 0;
 
-    this.events.onScanProgress?.(0, totalOperations, 'Starting full scan...');
+    this.events.onScanProgress?.(0, totalOperations, `Starting full scan of ${this.eligibleSymbols.length} symbols...`);
 
     for (const timeframe of this.config.timeframes) {
+      this.events.onScanProgress?.(
+        completed,
+        totalOperations,
+        `Scanning ${timeframe} (${this.eligibleSymbols.length} symbols)...`
+      );
+
       for (const symbol of this.eligibleSymbols) {
         if (!this.isRunning) break;
 
@@ -152,11 +159,12 @@ export class BackburnerScreener {
         }
 
         completed++;
-        if (completed % 50 === 0) {
+        // Update progress every 10 symbols for more frequent feedback
+        if (completed % 10 === 0) {
           this.events.onScanProgress?.(
             completed,
             totalOperations,
-            `Scanning ${timeframe}...`
+            `Scanning ${timeframe}: ${symbol.replace('USDT', '')}...`
           );
         }
       }
@@ -175,6 +183,9 @@ export class BackburnerScreener {
     const activeSetups = this.detector.getActiveSetups();
 
     // Update existing setups first
+    if (activeSetups.length > 0) {
+      this.events.onScanStatus?.(`Updating ${activeSetups.length} active setups...`);
+    }
     for (const setup of activeSetups) {
       try {
         await this.analyzeSymbol(setup.symbol, setup.timeframe);
@@ -185,6 +196,7 @@ export class BackburnerScreener {
 
     // Check a subset of symbols for new setups (rotating through)
     const symbolsToCheck = this.getSymbolsForIncrementalCheck();
+    this.events.onScanStatus?.(`Checking ${symbolsToCheck.length} symbols for new setups...`);
 
     for (const timeframe of this.config.timeframes) {
       for (const symbol of symbolsToCheck) {
@@ -206,6 +218,7 @@ export class BackburnerScreener {
 
     // Clean up expired setups
     this.cleanupExpiredSetups();
+    this.events.onScanStatus?.(`Monitoring ${this.eligibleSymbols.length} symbols...`);
   }
 
   /**

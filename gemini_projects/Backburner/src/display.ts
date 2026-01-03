@@ -145,7 +145,8 @@ export function createSetupsTable(setups: BackburnerSetup[]): string {
 export function createSummary(
   setups: BackburnerSetup[],
   eligibleSymbols: number,
-  isScanning: boolean
+  isScanning: boolean,
+  statusMessage?: string
 ): string {
   const byState = {
     triggered: setups.filter(s => s.state === 'triggered').length,
@@ -160,10 +161,12 @@ export function createSummary(
   };
 
   const statusIcon = isScanning ? chalk.green('●') : chalk.red('○');
+  const timestamp = new Date().toLocaleTimeString();
 
   const lines = [
     '',
     `${statusIcon} ${chalk.bold('Backburner Screener')} | ${eligibleSymbols} symbols | ${setups.length} active setups`,
+    chalk.gray(`  Last update: ${timestamp}${statusMessage ? ` | ${statusMessage}` : ''}`),
     '',
     chalk.gray(`  Triggered: ${byState.triggered} | Deep Oversold: ${byState.deep_oversold} | Bouncing: ${byState.bouncing}`),
     chalk.gray(`  5m: ${byTimeframe['5m']} | 15m: ${byTimeframe['15m']} | 1h: ${byTimeframe['1h']}`),

@@ -74,9 +74,10 @@ async function main() {
   console.log(createHeader());
   console.log('  Starting Backburner Screener...\n');
 
-  // Track notifications to show
+  // Track notifications and status
   const notifications: string[] = [];
   let lastDisplayTime = 0;
+  let currentStatus = '';
   const displayThrottleMs = 1000; // Update display at most once per second
 
   const screener = new BackburnerScreener(
@@ -101,11 +102,16 @@ async function main() {
       },
       onScanProgress: (completed: number, total: number, phase: string) => {
         // Show progress during initial scan
+        currentStatus = phase;
         if (completed < total) {
           moveCursorToTop();
           console.log(createHeader());
           console.log(createProgressBar(completed, total, phase));
         }
+      },
+      onScanStatus: (status: string) => {
+        currentStatus = status;
+        updateDisplay();
       },
       onError: (error: Error, symbol?: string) => {
         // Log errors to stderr without disrupting display
@@ -126,7 +132,8 @@ async function main() {
     console.log(createSummary(
       screener.getActiveSetups(),
       screener.getEligibleSymbolCount(),
-      screener.isActive()
+      screener.isActive(),
+      currentStatus
     ));
 
     // Show recent notifications (last 5)

@@ -296,8 +296,9 @@ export function clearScreen(): void {
 }
 
 /**
- * Move cursor to top of terminal
+ * Move cursor to top of terminal and clear screen
  */
 export function moveCursorToTop(): void {
-  process.stdout.write('\x1B[H');
+  // Move to top-left corner and clear everything below
+  process.stdout.write('\x1B[H\x1B[J');
 }

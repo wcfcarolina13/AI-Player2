@@ -1,6 +1,13 @@
 import { BackburnerDetector } from './backburner-detector.js';
 import { getExchangeInfo, get24hTickers, getKlines } from './mexc-api.js';
 import { DEFAULT_CONFIG, TIMEFRAME_MS, SETUP_EXPIRY_MS } from './config.js';
+import {
+  buildMarketDataCache,
+  getMarketCap,
+  getMarketCapRank,
+  getCoinName,
+  hasMarketCapData,
+} from './coingecko-api.js';
 import type { Timeframe, BackburnerSetup, SymbolInfo, ScreenerConfig, QualityTier } from './types.js';
 
 export interface ScreenerEvents {
@@ -46,6 +53,11 @@ export class BackburnerScreener {
     }
 
     this.isRunning = true;
+
+    // Fetch CoinGecko market data for market cap filtering
+    await buildMarketDataCache((msg) => {
+      this.events.onScanProgress?.(0, 1, msg);
+    });
 
     // Initial symbol discovery
     await this.discoverSymbols();
@@ -123,6 +135,17 @@ export class BackburnerScreener {
     // Must meet minimum volume
     if (volume24h < this.config.minVolume24h) {
       return false;
+    }
+
+    // Check market cap requirements (filters fake volume)
+    if (this.config.requireMarketCap) {
+      if (!hasMarketCapData(info.symbol)) {
+        return false; // Not on CoinGecko = likely scam/fake
+      }
+      const marketCap = getMarketCap(info.symbol);
+      if (!marketCap || marketCap < this.config.minMarketCap) {
+        return false; // Below minimum market cap
+      }
     }
 
     // Check exclusion patterns
@@ -288,7 +311,14 @@ export class BackburnerScreener {
       // Add volume and quality tier info
       const volume24h = this.symbolVolumes.get(symbol) || 0;
       setup.volume24h = volume24h;
-      setup.qualityTier = this.getQualityTier(volume24h);
+
+      // Add CoinGecko data
+      setup.coinName = getCoinName(symbol);
+      setup.marketCap = getMarketCap(symbol);
+      setup.marketCapRank = getMarketCapRank(symbol);
+
+      // Quality tier now based on market cap
+      setup.qualityTier = this.getQualityTier(setup.marketCap || 0);
 
       const key = `${symbol}-${timeframe}-${setup.direction}`;
       const previousSetup = this.previousSetups.get(key);
@@ -400,12 +430,12 @@ export class BackburnerScreener {
   }
 
   /**
-   * Get quality tier based on 24h volume
+   * Get quality tier based on market cap
    */
-  private getQualityTier(volume24h: number): QualityTier {
-    if (volume24h >= this.config.volumeTiers.bluechip) {
+  private getQualityTier(marketCap: number): QualityTier {
+    if (marketCap >= this.config.volumeTiers.bluechip) {
       return 'bluechip';
-    } else if (volume24h >= this.config.volumeTiers.midcap) {
+    } else if (marketCap >= this.config.volumeTiers.midcap) {
       return 'midcap';
     } else {
       return 'shitcoin';

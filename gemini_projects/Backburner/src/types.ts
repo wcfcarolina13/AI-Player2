@@ -66,6 +66,11 @@ export interface BackburnerSetup {
   volume24h?: number;
   qualityTier?: QualityTier;
 
+  // CoinGecko data
+  coinName?: string;         // Full name (e.g., "Bitcoin", "Ethereum")
+  marketCap?: number;        // Market cap in USD
+  marketCapRank?: number;    // CoinGecko ranking
+
   // Higher timeframe trend (for multi-timeframe confirmation)
   higherTFBullish?: boolean;
 }
@@ -104,6 +109,10 @@ export interface ScreenerConfig {
   rsiDeepOverboughtThreshold: number;
   minImpulsePercent: number;
   minVolume24h: number;
+  // Market cap filtering
+  minMarketCap: number;
+  requireMarketCap: boolean;
+  // Quality tiers (now based on market cap)
   volumeTiers: {
     bluechip: number;
     midcap: number;

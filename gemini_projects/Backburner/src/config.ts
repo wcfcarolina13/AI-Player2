@@ -20,11 +20,15 @@ export const DEFAULT_CONFIG: ScreenerConfig = {
   // Volume filter (24h volume in USDT)
   minVolume24h: 1_000_000,  // $1M minimum to be included
 
-  // Volume tiers for quality classification
+  // Market cap filter (filters out fake volume coins)
+  minMarketCap: 10_000_000,  // $10M minimum market cap
+  requireMarketCap: true,    // Only show coins with CoinGecko data
+
+  // Volume tiers for quality classification (based on market cap now)
   volumeTiers: {
-    bluechip: 20_000_000,   // $20M+ = blue chip (BTC, ETH, SOL, etc.)
-    midcap: 5_000_000,      // $5M-$20M = mid cap
-    lowcap: 1_000_000,      // $1M-$5M = low cap (SHITCOIN warning)
+    bluechip: 1_000_000_000,  // $1B+ market cap = blue chip
+    midcap: 100_000_000,      // $100M-$1B market cap = mid cap
+    lowcap: 10_000_000,       // $10M-$100M market cap = low cap (SHITCOIN warning)
   },
 
   // Update frequency

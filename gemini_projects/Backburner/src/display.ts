@@ -84,14 +84,34 @@ function formatQualityTier(tier: QualityTier | undefined): string {
 }
 
 /**
- * Format symbol with tier indicator
+ * Format symbol with full name
  */
-function formatSymbol(symbol: string, tier: QualityTier | undefined): string {
-  const name = symbol.replace('USDT', '');
+function formatSymbol(symbol: string, coinName: string | undefined, tier: QualityTier | undefined): string {
+  const ticker = symbol.replace('USDT', '');
+  const name = coinName || ticker;
+  // Truncate long names
+  const displayName = name.length > 14 ? name.slice(0, 12) + '..' : name;
+
   if (tier === 'shitcoin') {
-    return chalk.red.bold(name);
+    return chalk.red.bold(displayName);
   }
-  return chalk.white.bold(name);
+  return chalk.white.bold(displayName);
+}
+
+/**
+ * Format market cap for display
+ */
+function formatMarketCap(marketCap: number | undefined): string {
+  if (!marketCap) return chalk.gray('N/A');
+
+  if (marketCap >= 1_000_000_000) {
+    return chalk.green(`$${(marketCap / 1_000_000_000).toFixed(1)}B`);
+  } else if (marketCap >= 100_000_000) {
+    return chalk.yellow(`$${(marketCap / 1_000_000).toFixed(0)}M`);
+  } else if (marketCap >= 1_000_000) {
+    return chalk.red(`$${(marketCap / 1_000_000).toFixed(1)}M`);
+  }
+  return chalk.red(`$${(marketCap / 1_000).toFixed(0)}K`);
 }
 
 /**
@@ -141,43 +161,33 @@ export function createSetupsTable(setups: BackburnerSetup[]): string {
 
   const table = new Table({
     head: [
-      chalk.white.bold('Symbol'),
+      chalk.white.bold('Name'),
       chalk.white.bold('Dir'),
-      chalk.white.bold('Tier'),
+      chalk.white.bold('MCap'),
       chalk.white.bold('TF'),
       chalk.white.bold('State'),
       chalk.white.bold('RSI'),
       chalk.white.bold('Price'),
       chalk.white.bold('Impulse'),
-      chalk.white.bold('HTF'),
       chalk.white.bold('Detected'),
     ],
     style: {
       head: [],
       border: ['gray'],
     },
-    colWidths: [10, 9, 12, 5, 16, 7, 12, 9, 5, 10],
+    colWidths: [16, 9, 8, 5, 16, 7, 12, 9, 10],
   });
 
   for (const setup of sorted) {
-    const volumeRatio = setup.impulseAvgVolume > 0
-      ? (setup.pullbackAvgVolume / setup.impulseAvgVolume).toFixed(2)
-      : 'N/A';
-
     table.push([
-      formatSymbol(setup.symbol, setup.qualityTier),
+      formatSymbol(setup.symbol, setup.coinName, setup.qualityTier),
       formatDirection(setup.direction),
-      formatQualityTier(setup.qualityTier),
+      formatMarketCap(setup.marketCap),
       formatTimeframe(setup.timeframe),
       formatState(setup.state),
       formatRSI(setup.currentRSI),
       setup.currentPrice.toPrecision(5),
       formatPercent(setup.impulsePercentMove),
-      setup.higherTFBullish === undefined
-        ? chalk.gray('-')
-        : setup.higherTFBullish
-          ? chalk.green('↑')
-          : chalk.red('↓'),
       timeAgo(setup.detectedAt),
     ]);
   }

@@ -318,6 +318,11 @@ export class TrailingStopEngine {
       return null;
     }
 
+    // Guard: Check if position is already closed (race condition prevention)
+    if (position.status !== 'open') {
+      return null;
+    }
+
     position.currentPrice = setup.currentPrice;
 
     // Calculate raw PnL (before costs) for trailing stop logic
@@ -559,6 +564,9 @@ export class TrailingStopEngine {
     for (const [key, position] of this.positions) {
       if (!(position as any).orphaned) continue;
 
+      // Guard: Check if position is already closed (race condition prevention)
+      if (position.status !== 'open') continue;
+
       try {
         const currentPrice = await getPriceFn(position.symbol);
         position.currentPrice = currentPrice;
@@ -631,6 +639,9 @@ export class TrailingStopEngine {
    */
   async updateAllPositionPrices(getPriceFn: (symbol: string, marketType: MarketType) => Promise<number | null>): Promise<void> {
     for (const [key, position] of this.positions) {
+      // Guard: Check if position is already closed (race condition prevention)
+      if (position.status !== 'open') continue;
+
       try {
         const currentPrice = await getPriceFn(position.symbol, position.marketType);
         if (currentPrice === null) continue;

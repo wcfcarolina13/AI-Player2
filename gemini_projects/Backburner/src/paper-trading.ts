@@ -251,6 +251,11 @@ export class PaperTradingEngine {
       return null;
     }
 
+    // Guard: Check if position is already closed (race condition prevention)
+    if (position.status !== 'open') {
+      return null;
+    }
+
     // Update current price
     position.currentPrice = setup.currentPrice;
 
@@ -400,6 +405,9 @@ export class PaperTradingEngine {
   async updateOrphanedPositions(getPriceFn: (symbol: string) => Promise<number>): Promise<void> {
     for (const [key, position] of this.positions) {
       if (!(position as any).orphaned) continue;
+
+      // Guard: Check if position is already closed (race condition prevention)
+      if (position.status !== 'open') continue;
 
       try {
         const currentPrice = await getPriceFn(position.symbol);

@@ -309,6 +309,16 @@ export class PaperTradingEngine {
   private closePosition(position: PaperPosition, status: PositionStatus, reason: string): void {
     const key = `${position.symbol}-${position.timeframe}-${position.direction}-${position.marketType}`;
 
+    // Guard: Check if position is still open (prevent duplicate closes)
+    if (!this.positions.has(key)) {
+      return; // Already closed
+    }
+
+    // Guard: Check if already closed (status already set)
+    if (position.status !== 'open') {
+      return; // Already closed
+    }
+
     // Calculate final PnL
     const priceChange = position.direction === 'long'
       ? (position.currentPrice - position.entryPrice) / position.entryPrice
@@ -320,6 +330,9 @@ export class PaperTradingEngine {
     position.exitTime = Date.now();
     position.status = status;
     position.exitReason = reason;
+
+    // IMPORTANT: Remove from positions map FIRST to prevent duplicate closes
+    this.positions.delete(key);
 
     // Return margin + PnL to balance
     this.balance += position.marginUsed + position.realizedPnL;
@@ -343,7 +356,6 @@ export class PaperTradingEngine {
     }, true);  // Important - always log
 
     // Move to closed positions
-    this.positions.delete(key);
     this.closedPositions.push(position);
 
     // Clean up setup tracking

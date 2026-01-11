@@ -11,9 +11,11 @@ import { BTCTrendBot } from './btc-trend-bot.js';
 import { TrendOverrideBot } from './trend-override-bot.js';
 import { TrendFlipBot } from './trend-flip-bot.js';
 import { createBtcBiasBots, type BiasLevel } from './btc-bias-bot.js';
+import { createMexcSimulationBots } from './mexc-trailing-simulation.js';
 import { NotificationManager } from './notifications.js';
+import { FocusModeManager, getFocusModeManager } from './focus-mode.js';
 import { BackburnerDetector } from './backburner-detector.js';
-import { getKlines, getFuturesKlines, spotSymbolToFutures, getCurrentPrice } from './mexc-api.js';
+import { getKlines, getFuturesKlines, spotSymbolToFutures, getCurrentPrice, getPrice } from './mexc-api.js';
 import { getCurrentRSI, calculateRSI, calculateSMA, detectDivergence } from './indicators.js';
 import { DEFAULT_CONFIG } from './config.js';
 import { getDataPersistence } from './data-persistence.js';
@@ -47,6 +49,13 @@ const botVisibility: Record<string, boolean> = {
   bias100x50hard: true,
   bias10x20hard: true,
   bias10x50hard: true,
+  // MEXC Simulation bots (6 variants)
+  'mexc-aggressive': true,
+  'mexc-aggressive-2cb': true,
+  'mexc-wide': true,
+  'mexc-wide-2cb': true,
+  'mexc-standard': true,
+  'mexc-standard-05cb': true,
 };
 
 // Setup history (keeps removed setups for longer viewing)
@@ -220,12 +229,19 @@ const trendFlipBot = new TrendFlipBot({
 // Only trade BTC based on macro bias, hold through neutral, require stronger bias after stop-out
 const btcBiasBots = createBtcBiasBots(2000);
 
+// Bots 20-25: MEXC Trailing Stop Simulation Bots (6 variants)
+// Simulates MEXC's continuous trailing stop behavior for comparison with our discrete levels
+const mexcSimBots = createMexcSimulationBots(2000);
+
 const notifier = new NotificationManager({
   enabled: true,
   sound: true,
   soundName: 'Glass',
   onlyTriggered: true,
 });
+
+// Focus Mode - for manual trade copying with notifications
+const focusMode = getFocusModeManager();
 
 // State
 let currentStatus = 'Starting...';
@@ -297,6 +313,33 @@ async function handleNewSetup(setup: BackburnerSetup) {
     broadcast('position_opened', { bot: 'tripleLight', position: tripleLightPosition });
   }
 
+  // Try MEXC simulation bots
+  for (const [botId, bot] of mexcSimBots) {
+    const position = bot.openPosition(setup);
+    if (position) {
+      broadcast('position_opened', { bot: botId, position });
+    }
+  }
+
+  // Focus Mode: Track positions from target bot (Trail Standard by default)
+  if (focusMode.isEnabled()) {
+    const targetBotId = focusMode.getConfig().targetBot;
+    let targetPosition = null;
+    if (targetBotId === 'trailing10pct10x' && trail10pct10xPosition) {
+      targetPosition = trail10pct10xPosition;
+    } else if (targetBotId === 'trailing10pct20x' && trail10pct20xPosition) {
+      targetPosition = trail10pct20xPosition;
+    } else if (targetBotId === 'trailWide' && trailWidePosition) {
+      targetPosition = trailWidePosition;
+    } else if (targetBotId === 'trailing1pct' && trail1pctPosition) {
+      targetPosition = trail1pctPosition;
+    }
+
+    if (targetPosition) {
+      await focusMode.onPositionOpened(targetPosition, setup);
+    }
+  }
+
   // Send notification
   await notifier.notifyNewSetup(setup);
 
@@ -305,15 +348,111 @@ async function handleNewSetup(setup: BackburnerSetup) {
   broadcastState();
 }
 
-function handleSetupUpdated(setup: BackburnerSetup) {
-  // Update all trailing bots
-  const fixedPosition = fixedTPBot.updatePosition(setup);
-  const trail1pctPosition = trailing1pctBot.updatePosition(setup);
-  const trail10pct10xPosition = trailing10pct10xBot.updatePosition(setup);
-  const trail10pct20xPosition = trailing10pct20xBot.updatePosition(setup);
-  const trailWidePosition = trailWideBot.updatePosition(setup);
-  const confluencePosition = confluenceBot.updatePosition(setup);
-  const tripleLightPosition = tripleLightBot.handleSetupUpdated(setup);
+async function handleSetupUpdated(setup: BackburnerSetup) {
+  // First try to update existing positions
+  let fixedPosition = fixedTPBot.updatePosition(setup);
+  let trail1pctPosition = trailing1pctBot.updatePosition(setup);
+  let trail10pct10xPosition = trailing10pct10xBot.updatePosition(setup);
+  let trail10pct20xPosition = trailing10pct20xBot.updatePosition(setup);
+  let trailWidePosition = trailWideBot.updatePosition(setup);
+  let confluencePosition = confluenceBot.updatePosition(setup);
+  let tripleLightPosition = tripleLightBot.handleSetupUpdated(setup);
+
+  // If no position exists and setup just became triggered/deep_extreme, try to open
+  // This handles the watching -> triggered state transition
+  let newlyOpened = false;
+  if (!fixedPosition && (setup.state === 'triggered' || setup.state === 'deep_extreme')) {
+    fixedPosition = fixedTPBot.openPosition(setup);
+    if (fixedPosition) {
+      broadcast('position_opened', { bot: 'fixedTP', position: fixedPosition });
+      newlyOpened = true;
+    }
+  }
+  if (!trail1pctPosition && (setup.state === 'triggered' || setup.state === 'deep_extreme')) {
+    trail1pctPosition = trailing1pctBot.openPosition(setup);
+    if (trail1pctPosition) {
+      broadcast('position_opened', { bot: 'trailing1pct', position: trail1pctPosition });
+      newlyOpened = true;
+    }
+  }
+  if (!trail10pct10xPosition && (setup.state === 'triggered' || setup.state === 'deep_extreme')) {
+    trail10pct10xPosition = trailing10pct10xBot.openPosition(setup);
+    if (trail10pct10xPosition) {
+      broadcast('position_opened', { bot: 'trailing10pct10x', position: trail10pct10xPosition });
+      newlyOpened = true;
+    }
+  }
+  if (!trail10pct20xPosition && (setup.state === 'triggered' || setup.state === 'deep_extreme')) {
+    trail10pct20xPosition = trailing10pct20xBot.openPosition(setup);
+    if (trail10pct20xPosition) {
+      broadcast('position_opened', { bot: 'trailing10pct20x', position: trail10pct20xPosition });
+      newlyOpened = true;
+    }
+  }
+  if (!trailWidePosition && (setup.state === 'triggered' || setup.state === 'deep_extreme')) {
+    trailWidePosition = trailWideBot.openPosition(setup);
+    if (trailWidePosition) {
+      broadcast('position_opened', { bot: 'trailWide', position: trailWidePosition });
+      newlyOpened = true;
+    }
+  }
+  if (!confluencePosition && (setup.state === 'triggered' || setup.state === 'deep_extreme')) {
+    confluencePosition = confluenceBot.openPosition(setup);
+    if (confluencePosition) {
+      broadcast('position_opened', { bot: 'confluence', position: confluencePosition });
+      newlyOpened = true;
+    }
+  }
+  if (!tripleLightPosition && (setup.state === 'triggered' || setup.state === 'deep_extreme')) {
+    tripleLightPosition = tripleLightBot.handleNewSetup(setup);
+    if (tripleLightPosition) {
+      broadcast('position_opened', { bot: 'tripleLight', position: tripleLightPosition });
+      newlyOpened = true;
+    }
+  }
+
+  // Try MEXC simulation bots too (they also only open on triggered/deep_extreme)
+  if (setup.state === 'triggered' || setup.state === 'deep_extreme') {
+    for (const [botId, bot] of mexcSimBots) {
+      const existingPos = bot.getOpenPositions().find(
+        p => p.symbol === setup.symbol && p.direction === setup.direction &&
+             p.timeframe === setup.timeframe && p.marketType === setup.marketType
+      );
+      if (!existingPos) {
+        const position = bot.openPosition(setup);
+        if (position) {
+          broadcast('position_opened', { bot: botId, position });
+          newlyOpened = true;
+        }
+      }
+    }
+  }
+
+  // Focus Mode: If a position was just opened in the target bot, track it
+  if (newlyOpened && focusMode.isEnabled()) {
+    const targetBotId = focusMode.getConfig().targetBot;
+    let targetPosition = null;
+    if (targetBotId === 'trailing10pct10x' && trail10pct10xPosition && trail10pct10xPosition.status === 'open') {
+      targetPosition = trail10pct10xPosition;
+    } else if (targetBotId === 'trailing10pct20x' && trail10pct20xPosition && trail10pct20xPosition.status === 'open') {
+      targetPosition = trail10pct20xPosition;
+    } else if (targetBotId === 'trailWide' && trailWidePosition && trailWidePosition.status === 'open') {
+      targetPosition = trailWidePosition;
+    } else if (targetBotId === 'trailing1pct' && trail1pctPosition && trail1pctPosition.status === 'open') {
+      targetPosition = trail1pctPosition;
+    }
+    if (targetPosition) {
+      // Check if Focus Mode is already tracking this position
+      const focusPositions = focusMode.getActivePositions();
+      const alreadyTracking = focusPositions.some(
+        p => p.symbol === setup.symbol && p.direction === setup.direction &&
+             p.timeframe === setup.timeframe && p.marketType === setup.marketType
+      );
+      if (!alreadyTracking) {
+        await focusMode.onPositionOpened(targetPosition, setup);
+      }
+    }
+  }
 
   if (fixedPosition) {
     if (fixedPosition.status !== 'open') {
@@ -371,6 +510,40 @@ function handleSetupUpdated(setup: BackburnerSetup) {
     }
   }
 
+  // Update MEXC simulation bots
+  for (const [botId, bot] of mexcSimBots) {
+    bot.updatePosition(setup, setup.currentPrice);
+  }
+
+  // Focus Mode: Track trailing stop updates
+  if (focusMode.isEnabled()) {
+    const targetBotId = focusMode.getConfig().targetBot;
+    let targetPosition = null;
+    let positionClosed = false;
+
+    if (targetBotId === 'trailing10pct10x' && trail10pct10xPosition) {
+      targetPosition = trail10pct10xPosition;
+      positionClosed = trail10pct10xPosition.status !== 'open';
+    } else if (targetBotId === 'trailing10pct20x' && trail10pct20xPosition) {
+      targetPosition = trail10pct20xPosition;
+      positionClosed = trail10pct20xPosition.status !== 'open';
+    } else if (targetBotId === 'trailWide' && trailWidePosition) {
+      targetPosition = trailWidePosition;
+      positionClosed = trailWidePosition.status !== 'open';
+    } else if (targetBotId === 'trailing1pct' && trail1pctPosition) {
+      targetPosition = trail1pctPosition;
+      positionClosed = trail1pctPosition.status !== 'open';
+    }
+
+    if (targetPosition) {
+      if (positionClosed) {
+        await focusMode.onPositionClosed(targetPosition, targetPosition.exitReason || 'Unknown');
+      } else {
+        await focusMode.onPositionUpdated(targetPosition);
+      }
+    }
+  }
+
   broadcast('setup_updated', setup);
   broadcastState();
 }
@@ -384,6 +557,11 @@ function handleSetupRemoved(setup: BackburnerSetup) {
   trailWideBot.handleSetupRemoved(setup);
   confluenceBot.handleSetupRemoved(setup);
   tripleLightBot.handleSetupRemoved(setup);
+
+  // Handle MEXC simulation bots
+  for (const [botId, bot] of mexcSimBots) {
+    bot.onSetupRemoved(setup);
+  }
 
   // Add to history
   const historySetup = { ...setup, removedAt: Date.now() };
@@ -588,7 +766,40 @@ function getFullState() {
         },
       ])
     ),
+    // Bots 20-25: MEXC Simulation Bots
+    mexcSimBots: Object.fromEntries(
+      Array.from(mexcSimBots.entries()).map(([key, bot]) => [
+        key,
+        {
+          name: bot.getName(),
+          config: bot.getConfig(),
+          balance: bot.getBalance(),
+          unrealizedPnL: bot.getUnrealizedPnL(),
+          openPositions: bot.getOpenPositions(),
+          closedPositions: bot.getClosedPositions(),
+          stats: bot.getStats(),
+          visible: botVisibility[key],
+        },
+      ])
+    ),
     botVisibility,
+    // Focus Mode state - sync with target bot positions first
+    focusMode: (() => {
+      // Sync Focus Mode with current positions from target bot
+      const targetBotId = focusMode.getConfig().targetBot;
+      let targetBotPositions: any[] = [];
+      if (targetBotId === 'trailing10pct10x') {
+        targetBotPositions = trailing10pct10xBot.getOpenPositions();
+      } else if (targetBotId === 'trailing10pct20x') {
+        targetBotPositions = trailing10pct20xBot.getOpenPositions();
+      } else if (targetBotId === 'trailWide') {
+        targetBotPositions = trailWideBot.getOpenPositions();
+      } else if (targetBotId === 'trailing1pct') {
+        targetBotPositions = trailing1pctBot.getOpenPositions();
+      }
+      focusMode.syncWithBotPositions(targetBotPositions);
+      return focusMode.getState();
+    })(),
     meta: {
       eligibleSymbols: screener.getEligibleSymbolCount(),
       isRunning: screener.isActive(),
@@ -648,6 +859,10 @@ app.post('/api/reset', express.json(), (req, res) => {
   } else if (bot === 'tripleLight') {
     tripleLightBot.reset();
     res.json({ success: true, bot: 'tripleLight', balance: tripleLightBot.getBalance() });
+  } else if (mexcSimBots.has(bot)) {
+    const mexcBot = mexcSimBots.get(bot)!;
+    mexcBot.reset();
+    res.json({ success: true, bot, balance: mexcBot.getBalance() });
   } else {
     // Reset all bots
     fixedTPBot.reset();
@@ -659,6 +874,10 @@ app.post('/api/reset', express.json(), (req, res) => {
     tripleLightBot.reset();
     btcExtremeBot.reset();
     btcTrendBot.reset();
+    // Reset MEXC simulation bots
+    for (const [, mexcBot] of mexcSimBots) {
+      mexcBot.reset();
+    }
     res.json({
       success: true,
       bot: 'all',
@@ -672,6 +891,7 @@ app.post('/api/reset', express.json(), (req, res) => {
         tripleLight: tripleLightBot.getBalance(),
         btcExtreme: btcExtremeBot.getBalance(),
         btcTrend: btcTrendBot.getBalance(),
+        ...Object.fromEntries(Array.from(mexcSimBots.entries()).map(([k, b]) => [k, b.getBalance()])),
       },
     });
   }
@@ -728,6 +948,57 @@ app.post('/api/toggle-bot', express.json(), (req, res) => {
     return;
   }
   broadcastState();
+});
+
+// Focus Mode API endpoints
+app.get('/api/focus', (req, res) => {
+  res.json(focusMode.getState());
+});
+
+app.post('/api/focus/enable', express.json(), (req, res) => {
+  focusMode.setEnabled(true);
+  broadcastState();
+  res.json({ success: true, enabled: true });
+});
+
+app.post('/api/focus/disable', express.json(), (req, res) => {
+  focusMode.setEnabled(false);
+  broadcastState();
+  res.json({ success: true, enabled: false });
+});
+
+app.post('/api/focus/config', express.json(), (req, res) => {
+  const { accountBalance, maxPositionSizePercent, leverage, targetBot, maxOpenPositions } = req.body;
+  const config: any = {};
+  if (accountBalance !== undefined) config.accountBalance = accountBalance;
+  if (maxPositionSizePercent !== undefined) config.maxPositionSizePercent = maxPositionSizePercent;
+  if (leverage !== undefined) config.leverage = leverage;
+  if (maxOpenPositions !== undefined) config.maxOpenPositions = maxOpenPositions;
+
+  // If target bot changed, clear all tracked positions and re-sync
+  const currentConfig = focusMode.getConfig();
+  if (targetBot !== undefined && targetBot !== currentConfig.targetBot) {
+    config.targetBot = targetBot;
+    focusMode.updateConfig(config);
+    // Clear all positions and let sync re-import from new bot
+    focusMode.clearAllPositions();
+  } else {
+    focusMode.updateConfig(config);
+  }
+
+  broadcastState();
+  res.json({ success: true, config: focusMode.getConfig() });
+});
+
+app.post('/api/focus/test-notification', async (req, res) => {
+  await focusMode.testNotification();
+  res.json({ success: true });
+});
+
+app.post('/api/focus/clear-closed', (req, res) => {
+  focusMode.clearClosedPositions();
+  broadcastState();
+  res.json({ success: true });
 });
 
 // Check a specific symbol on demand
@@ -1420,6 +1691,55 @@ function getHtmlPage(): string {
       <div id="symbolCount">-</div>
     </div>
 
+    <!-- Focus Mode Panel -->
+    <div id="focusModePanel" class="card" style="margin-bottom: 16px; border-left: 3px solid #f0883e; display: none;">
+      <div class="card-header" style="background: linear-gradient(135deg, #21262d 0%, #161b22 100%);">
+        <span class="card-title">🎯 Focus Mode - Trade Copying</span>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <span id="focusPositionCount" style="font-size: 12px; color: #8b949e;">0/5 positions</span>
+          <button id="focusToggleBtn" onclick="toggleFocusMode()" style="padding: 4px 12px; border-radius: 4px; border: 1px solid #f0883e; background: #21262d; color: #f0883e; font-size: 11px; font-weight: 600; cursor: pointer;">
+            Enable
+          </button>
+          <button onclick="testFocusNotification()" style="padding: 4px 8px; border-radius: 4px; border: 1px solid #30363d; background: #21262d; color: #8b949e; font-size: 11px; cursor: pointer;" title="Test notification">
+            🔔
+          </button>
+        </div>
+      </div>
+      <div id="focusModeContent" style="padding: 12px;">
+        <!-- Config row -->
+        <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #21262d;">
+          <div style="font-size: 11px; color: #8b949e;">
+            Mirror: <select id="focusTargetBot" onchange="updateFocusConfig()" style="background: #0d1117; border: 1px solid #30363d; border-radius: 4px; color: #c9d1d9; padding: 2px 8px; font-size: 11px;">
+              <option value="trailing10pct10x">Trail Standard (Best)</option>
+              <option value="trailWide">Trail Wide</option>
+              <option value="trailing10pct20x">Trail Aggressive</option>
+              <option value="trailing1pct">Trail Light</option>
+            </select>
+          </div>
+          <div style="font-size: 11px; color: #8b949e;">
+            Balance: $<input type="number" id="focusBalance" value="1000" onchange="updateFocusConfig()" style="width: 60px; background: #0d1117; border: 1px solid #30363d; border-radius: 4px; color: #c9d1d9; padding: 2px 4px; font-size: 11px;">
+          </div>
+          <div style="font-size: 11px; color: #8b949e;">
+            Max %: <input type="number" id="focusMaxPercent" value="5" min="1" max="100" onchange="updateFocusConfig()" style="width: 40px; background: #0d1117; border: 1px solid #30363d; border-radius: 4px; color: #c9d1d9; padding: 2px 4px; font-size: 11px;">
+          </div>
+          <div style="font-size: 11px; color: #8b949e;">
+            Leverage: <input type="number" id="focusLeverage" value="10" min="1" max="100" onchange="updateFocusConfig()" style="width: 40px; background: #0d1117; border: 1px solid #30363d; border-radius: 4px; color: #c9d1d9; padding: 2px 4px; font-size: 11px;">x
+          </div>
+        </div>
+        <!-- Active positions -->
+        <div id="focusPositions" style="font-size: 12px;">
+          <div style="color: #6e7681; text-align: center; padding: 16px;">
+            Enable Focus Mode to receive trade copy notifications
+          </div>
+        </div>
+        <!-- Recent actions -->
+        <div id="focusActions" style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #21262d; display: none;">
+          <div style="font-size: 11px; color: #8b949e; margin-bottom: 8px;">Recent Actions:</div>
+          <div id="focusActionsList" style="font-size: 11px; max-height: 100px; overflow-y: auto;"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- Bot Control Panel -->
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
       <span style="font-size: 14px; color: #8b949e;">Bot Controls</span>
@@ -1680,6 +2000,49 @@ function getHtmlPage(): string {
           <div class="stat-value" id="bias10x50hardBalance" style="font-size: 16px;">$2,000</div>
           <div class="stat-label">10% 50x Hard | <span id="bias10x50hardPnL" class="positive">$0</span></div>
           <div class="stat-label" style="margin-top: 2px;"><span id="bias10x50hardStatus">-</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Section: MEXC Simulation Bots -->
+    <div class="section-header" onclick="toggleSection('mexcSim')" style="margin-top: 12px;">
+      <span class="section-title">📈 MEXC Simulation Bots (6)</span>
+      <span class="section-toggle" id="mexcSimToggle">▼</span>
+    </div>
+    <div class="section-content" id="mexcSimContent">
+      <div style="font-size: 11px; color: #8b949e; margin-bottom: 8px; padding: 6px 10px; background: #0d1117; border-radius: 4px;">
+        Simulates MEXC's continuous trailing stop behavior (callback % from peak). Compare vs our discrete level system.
+      </div>
+      <div class="stats-grid" style="grid-template-columns: repeat(3, 1fr); margin-bottom: 12px;">
+        <div class="stat-box" style="border-left: 3px solid #ff5722;">
+          <div class="stat-value" id="mexcAggressiveBalance" style="font-size: 16px;">$2,000</div>
+          <div class="stat-label">Aggressive 1%cb | <span id="mexcAggressivePnL" class="positive">$0</span></div>
+          <div class="stat-label" style="margin-top: 2px;"><span id="mexcAggressiveWinRate">0%</span> win | <span id="mexcAggressiveTrailing">0</span> trailing</div>
+        </div>
+        <div class="stat-box" style="border-left: 3px solid #e91e63;">
+          <div class="stat-value" id="mexcAggressive2cbBalance" style="font-size: 16px;">$2,000</div>
+          <div class="stat-label">Aggressive 2%cb | <span id="mexcAggressive2cbPnL" class="positive">$0</span></div>
+          <div class="stat-label" style="margin-top: 2px;"><span id="mexcAggressive2cbWinRate">0%</span> win | <span id="mexcAggressive2cbTrailing">0</span> trailing</div>
+        </div>
+        <div class="stat-box" style="border-left: 3px solid #9c27b0;">
+          <div class="stat-value" id="mexcWideBalance" style="font-size: 16px;">$2,000</div>
+          <div class="stat-label">Wide 1%cb | <span id="mexcWidePnL" class="positive">$0</span></div>
+          <div class="stat-label" style="margin-top: 2px;"><span id="mexcWideWinRate">0%</span> win | <span id="mexcWideTrailing">0</span> trailing</div>
+        </div>
+        <div class="stat-box" style="border-left: 3px solid #673ab7;">
+          <div class="stat-value" id="mexcWide2cbBalance" style="font-size: 16px;">$2,000</div>
+          <div class="stat-label">Wide 2%cb | <span id="mexcWide2cbPnL" class="positive">$0</span></div>
+          <div class="stat-label" style="margin-top: 2px;"><span id="mexcWide2cbWinRate">0%</span> win | <span id="mexcWide2cbTrailing">0</span> trailing</div>
+        </div>
+        <div class="stat-box" style="border-left: 3px solid #3f51b5;">
+          <div class="stat-value" id="mexcStandardBalance" style="font-size: 16px;">$2,000</div>
+          <div class="stat-label">Standard 1%cb | <span id="mexcStandardPnL" class="positive">$0</span></div>
+          <div class="stat-label" style="margin-top: 2px;"><span id="mexcStandardWinRate">0%</span> win | <span id="mexcStandardTrailing">0</span> trailing</div>
+        </div>
+        <div class="stat-box" style="border-left: 3px solid #2196f3;">
+          <div class="stat-value" id="mexcStandard05cbBalance" style="font-size: 16px;">$2,000</div>
+          <div class="stat-label">Standard 0.5%cb | <span id="mexcStandard05cbPnL" class="positive">$0</span></div>
+          <div class="stat-label" style="margin-top: 2px;"><span id="mexcStandard05cbWinRate">0%</span> win | <span id="mexcStandard05cbTrailing">0</span> trailing</div>
         </div>
       </div>
     </div>
@@ -2037,6 +2400,7 @@ function getHtmlPage(): string {
       altcoinBots: true,
       btcBiasBots: true,
       btcBiasStats: true,
+      mexcSim: true,
     };
 
     function toggleSection(sectionId) {
@@ -2159,6 +2523,199 @@ function getHtmlPage(): string {
         setups = allSetupsData.all;
       }
       document.getElementById('setupsTable').innerHTML = renderSetupsTable(setups, currentSetupsTab);
+    }
+
+    // Focus Mode functions
+    let focusModeEnabled = false;
+
+    async function toggleFocusMode() {
+      const endpoint = focusModeEnabled ? '/api/focus/disable' : '/api/focus/enable';
+      try {
+        const res = await fetch(endpoint, { method: 'POST' });
+        const data = await res.json();
+        focusModeEnabled = data.enabled;
+        updateFocusModeUI();
+      } catch (err) {
+        console.error('Failed to toggle focus mode:', err);
+      }
+    }
+
+    async function updateFocusConfig() {
+      const config = {
+        targetBot: document.getElementById('focusTargetBot').value,
+        accountBalance: parseFloat(document.getElementById('focusBalance').value) || 1000,
+        maxPositionSizePercent: parseFloat(document.getElementById('focusMaxPercent').value) || 5,
+        leverage: parseFloat(document.getElementById('focusLeverage').value) || 10,
+      };
+      try {
+        await fetch('/api/focus/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(config)
+        });
+      } catch (err) {
+        console.error('Failed to update focus config:', err);
+      }
+    }
+
+    async function testFocusNotification() {
+      try {
+        await fetch('/api/focus/test-notification', { method: 'POST' });
+      } catch (err) {
+        console.error('Failed to test notification:', err);
+      }
+    }
+
+    function updateFocusModeUI() {
+      const panel = document.getElementById('focusModePanel');
+      const btn = document.getElementById('focusToggleBtn');
+
+      // Always show panel
+      panel.style.display = 'block';
+
+      if (focusModeEnabled) {
+        btn.textContent = 'Disable';
+        btn.style.background = '#f0883e';
+        btn.style.color = '#0d1117';
+        panel.style.borderLeftColor = '#3fb950';
+      } else {
+        btn.textContent = 'Enable';
+        btn.style.background = '#21262d';
+        btn.style.color = '#f0883e';
+        panel.style.borderLeftColor = '#f0883e';
+      }
+    }
+
+    function updateFocusPositions(focusState) {
+      if (!focusState) return;
+
+      focusModeEnabled = focusState.enabled;
+      updateFocusModeUI();
+
+      // Update config fields
+      document.getElementById('focusTargetBot').value = focusState.targetBot || 'trailing10pct10x';
+      document.getElementById('focusBalance').value = focusState.accountBalance || 1000;
+      document.getElementById('focusMaxPercent').value = focusState.maxPositionSizePercent || 5;
+      document.getElementById('focusLeverage').value = focusState.leverage || 10;
+
+      // Update position count
+      document.getElementById('focusPositionCount').textContent = focusState.positionCount + ' positions';
+
+      // Update positions display
+      const posDiv = document.getElementById('focusPositions');
+      if (focusState.activePositions && focusState.activePositions.length > 0) {
+        let html = '<table style="width: 100%; border-collapse: collapse;">';
+        html += '<tr style="border-bottom: 1px solid #30363d;"><th style="text-align: left; padding: 4px; color: #8b949e; font-size: 11px;">Symbol</th><th style="text-align: center; padding: 4px; color: #8b949e; font-size: 11px;">Action</th><th style="text-align: right; padding: 4px; color: #8b949e; font-size: 11px;">Size</th><th style="text-align: right; padding: 4px; color: #8b949e; font-size: 11px;">Stop</th><th style="text-align: right; padding: 4px; color: #8b949e; font-size: 11px;">P&L</th></tr>';
+
+        for (const pos of focusState.activePositions) {
+          const dirClass = pos.direction === 'long' ? 'badge-long' : 'badge-short';
+          const pnl = pos.unrealizedPnL || 0;
+          const pnlPct = pos.unrealizedPnLPercent || 0;
+          const pnlClass = pnl >= 0 ? 'positive' : 'negative';
+          const pnlSign = pnl >= 0 ? '+' : '';
+          // Calculate ROI-based stop (price % * leverage)
+          const stopPricePct = pos.initialStopPercent || 2;
+          const stopRoiPct = stopPricePct * (pos.suggestedLeverage || 10);
+          const leverage = pos.suggestedLeverage || 10;
+
+          // Format stop price for easy copy-paste to MEXC
+          const stopPrice = pos.currentStopPrice || 0;
+          const stopPriceStr = stopPrice < 0.01 ? stopPrice.toFixed(6) : stopPrice < 1 ? stopPrice.toFixed(4) : stopPrice.toFixed(2);
+          const entryPrice = pos.entryPrice || 0;
+          const entryPriceStr = entryPrice < 0.01 ? entryPrice.toFixed(6) : entryPrice < 1 ? entryPrice.toFixed(4) : entryPrice.toFixed(2);
+
+          html += '<tr style="border-bottom: 1px solid #21262d;">';
+          html += '<td style="padding: 6px 4px;"><span style="font-weight: 600;">' + pos.symbol.replace('USDT', '') + '</span> <span class="badge ' + dirClass + '" style="font-size: 10px;">' + pos.direction.toUpperCase() + '</span><br/><span style="color: #6e7681; font-size: 10px;">' + pos.timeframe + ' ' + pos.marketType + '</span></td>';
+
+          // Action column - clear instructions
+          html += '<td style="text-align: center; padding: 6px 4px; font-size: 11px;">';
+          if (pos.status === 'pending_open') {
+            html += '<span style="color: #f0883e; font-weight: 600;">OPEN NOW</span>';
+            html += '<br/><span style="color: #c9d1d9; font-size: 10px;">Entry ~$' + entryPriceStr + '</span>';
+          } else if (pos.currentTrailLevel > 0) {
+            const lockedRoi = (pos.currentTrailLevel - 1) * 10;
+            html += '<span style="color: #3fb950; font-weight: 600;">MOVE STOP</span>';
+            html += '<br/><span style="color: #58a6ff; font-size: 10px;">Lock +' + lockedRoi + '% ROI</span>';
+          } else {
+            html += '<span style="color: #8b949e;">HOLD</span>';
+            html += '<br/><span style="color: #6e7681; font-size: 10px;">Wait for +10% ROI</span>';
+          }
+          html += '</td>';
+
+          // Size column
+          html += '<td style="text-align: right; padding: 6px 4px; color: #c9d1d9; font-size: 11px;">$' + pos.suggestedSize.toFixed(0) + '<br/><span style="color: #6e7681;">' + leverage + 'x</span></td>';
+
+          // Stop Price column - THE KEY INFO for MEXC
+          html += '<td style="text-align: right; padding: 6px 4px; font-size: 11px;">';
+          if (pos.currentTrailLevel > 0) {
+            const lockedRoi = (pos.currentTrailLevel - 1) * 10;
+            html += '<span style="color: #3fb950; font-weight: 600; font-size: 12px;">$' + stopPriceStr + '</span>';
+            html += '<br/><span style="color: #6e7681; font-size: 10px;">+' + lockedRoi + '% ROI</span>';
+          } else {
+            html += '<span style="color: #f85149; font-weight: 600; font-size: 12px;">$' + stopPriceStr + '</span>';
+            html += '<br/><span style="color: #6e7681; font-size: 10px;">-' + stopRoiPct.toFixed(0) + '% ROI</span>';
+          }
+          html += '</td>';
+
+          // P&L column
+          html += '<td style="text-align: right; padding: 6px 4px;" class="pnl ' + pnlClass + '">' + pnlSign + '$' + pnl.toFixed(2) + '<br/><span style="font-size: 10px;">' + pnlSign + pnlPct.toFixed(1) + '%</span></td>';
+          html += '</tr>';
+        }
+        html += '</table>';
+        posDiv.innerHTML = html;
+      } else if (focusModeEnabled) {
+        posDiv.innerHTML = '<div style="color: #6e7681; text-align: center; padding: 16px;">Waiting for signals from ' + focusState.targetBot + '...</div>';
+      } else {
+        posDiv.innerHTML = '<div style="color: #6e7681; text-align: center; padding: 16px;">Enable Focus Mode to receive trade copy notifications</div>';
+      }
+
+      // Update recent actions
+      const actionsDiv = document.getElementById('focusActions');
+      const actionsList = document.getElementById('focusActionsList');
+      if (focusState.recentActions && focusState.recentActions.length > 0) {
+        actionsDiv.style.display = 'block';
+        let actHtml = '';
+        for (const action of focusState.recentActions.slice(0, 8)) {
+          const ticker = action.position.symbol.replace('USDT', '');
+          const pos = action.position;
+          const stopPrice = (pos.currentStopPrice || 0).toPrecision(4);
+          const entryPrice = (pos.entryPrice || 0).toPrecision(4);
+          const stopRoiPct = ((pos.initialStopPercent || 2) * (pos.suggestedLeverage || 10)).toFixed(0);
+
+          if (action.type === 'OPEN_POSITION') {
+            actHtml += '<div style="padding: 6px 0; border-bottom: 1px solid #21262d;">';
+            actHtml += '<div style="color: #f0883e; font-weight: 600;">🟢 OPEN ' + ticker + ' ' + pos.direction.toUpperCase() + ' ' + pos.timeframe + '</div>';
+            actHtml += '<div style="color: #8b949e; font-size: 11px; margin-top: 2px;">Entry: $' + entryPrice + ' | Stop: $' + stopPrice + ' (-' + stopRoiPct + '% ROI)</div>';
+            actHtml += '<div style="color: #6e7681; font-size: 10px;">Size: $' + pos.suggestedSize + ' @ ' + pos.suggestedLeverage + 'x</div>';
+            actHtml += '</div>';
+          } else if (action.type === 'CLOSE_POSITION') {
+            const pnl = pos.unrealizedPnL || 0;
+            const pnlStr = pnl >= 0 ? '+$' + pnl.toFixed(2) : '-$' + Math.abs(pnl).toFixed(2);
+            actHtml += '<div style="padding: 6px 0; border-bottom: 1px solid #21262d;">';
+            actHtml += '<div style="color: #f85149; font-weight: 600;">🔴 CLOSE ' + ticker + ' - ' + action.reason + '</div>';
+            actHtml += '<div style="color: #8b949e; font-size: 11px; margin-top: 2px;">P&L: ' + pnlStr + '</div>';
+            actHtml += '</div>';
+          } else if (action.type === 'MOVE_TO_BREAKEVEN') {
+            actHtml += '<div style="padding: 6px 0; border-bottom: 1px solid #21262d;">';
+            actHtml += '<div style="color: #3fb950; font-weight: 600;">🔒 ' + ticker + ' MOVE STOP TO BREAKEVEN</div>';
+            actHtml += '<div style="color: #8b949e; font-size: 11px; margin-top: 2px;">New stop: $' + entryPrice + ' (entry price)</div>';
+            actHtml += '</div>';
+          } else if (action.type === 'LOCK_PROFIT') {
+            actHtml += '<div style="padding: 6px 0; border-bottom: 1px solid #21262d;">';
+            actHtml += '<div style="color: #58a6ff; font-weight: 600;">📈 ' + ticker + ' RAISE STOP - Lock +' + action.lockedPnL + '% ROI</div>';
+            actHtml += '<div style="color: #8b949e; font-size: 11px; margin-top: 2px;">New stop: $' + stopPrice + '</div>';
+            actHtml += '</div>';
+          } else if (action.type === 'UPDATE_STOP') {
+            actHtml += '<div style="padding: 6px 0; border-bottom: 1px solid #21262d;">';
+            actHtml += '<div style="color: #58a6ff; font-weight: 600;">⬆️ ' + ticker + ' Trail L' + action.oldLevel + ' → L' + action.newLevel + '</div>';
+            actHtml += '<div style="color: #8b949e; font-size: 11px; margin-top: 2px;">New stop: $' + stopPrice + '</div>';
+            actHtml += '</div>';
+          }
+        }
+        actionsList.innerHTML = actHtml;
+      } else {
+        actionsDiv.style.display = 'none';
+      }
     }
 
     async function toggleBot(bot) {
@@ -2483,6 +3040,34 @@ function getHtmlPage(): string {
         }
       }
 
+      // Update MEXC Simulation bots stats (Bots 20-25)
+      if (state.mexcSimBots) {
+        const mexcKeyMap = {
+          'mexc-aggressive': 'mexcAggressive',
+          'mexc-aggressive-2cb': 'mexcAggressive2cb',
+          'mexc-wide': 'mexcWide',
+          'mexc-wide-2cb': 'mexcWide2cb',
+          'mexc-standard': 'mexcStandard',
+          'mexc-standard-05cb': 'mexcStandard05cb',
+        };
+        for (const [key, elementId] of Object.entries(mexcKeyMap)) {
+          const bot = state.mexcSimBots[key];
+          if (bot) {
+            const balEl = document.getElementById(elementId + 'Balance');
+            const pnlEl = document.getElementById(elementId + 'PnL');
+            const winRateEl = document.getElementById(elementId + 'WinRate');
+            const trailingEl = document.getElementById(elementId + 'Trailing');
+            if (balEl) balEl.textContent = formatCurrency(bot.balance);
+            if (pnlEl) {
+              pnlEl.textContent = formatCurrency(bot.stats.totalPnL);
+              pnlEl.className = bot.stats.totalPnL >= 0 ? 'positive' : 'negative';
+            }
+            if (winRateEl) winRateEl.textContent = bot.stats.winRate.toFixed(0) + '%';
+            if (trailingEl) trailingEl.textContent = bot.stats.trailingActivatedCount || 0;
+          }
+        }
+      }
+
       // Update Fixed TP/SL positions (Bot 1)
       document.getElementById('fixedPositionCount').textContent = state.fixedTPBot.openPositions.length;
       document.getElementById('fixedPositionsTable').innerHTML = renderPositionsTable(state.fixedTPBot.openPositions, 'fixed');
@@ -2568,6 +3153,11 @@ function getHtmlPage(): string {
         document.getElementById('trendFlipPositionCount').textContent = state.trendFlipBot.openPositions.length;
         document.getElementById('trendFlipPositionTable').innerHTML = renderTrailingPositionsTable(state.trendFlipBot.openPositions);
         document.getElementById('trendFlipHistoryCount').textContent = state.trendFlipBot.closedPositions.length;
+      }
+
+      // Update Focus Mode
+      if (state.focusMode) {
+        updateFocusPositions(state.focusMode);
       }
     }
 
@@ -3140,23 +3730,85 @@ async function main() {
   dataPersistence.logBotConfig('btcTrend', 'BTC Momentum', { ...btcTrendBot.getConfig() });
   console.log('📊 Bot configurations logged to data persistence');
 
+  // Load persisted positions from disk
+  console.log('📂 Loading persisted positions...');
+  trailing1pctBot.loadState();
+  trailing10pct10xBot.loadState();
+  trailing10pct20xBot.loadState();
+  trailWideBot.loadState();
+  console.log('✅ Position loading complete');
+
+  // Save positions periodically (every 60 seconds)
+  setInterval(() => {
+    trailing1pctBot.saveState();
+    trailing10pct10xBot.saveState();
+    trailing10pct20xBot.saveState();
+    trailWideBot.saveState();
+  }, 60000);
+
+  // Graceful shutdown handler - save positions before exit
+  const saveAllPositions = () => {
+    console.log('\n💾 Saving positions before shutdown...');
+    trailing1pctBot.saveState();
+    trailing10pct10xBot.saveState();
+    trailing10pct20xBot.saveState();
+    trailWideBot.saveState();
+    dataPersistence.stop();
+    console.log('✅ Positions saved');
+  };
+
+  // Handle various shutdown signals
+  process.on('SIGINT', () => {
+    console.log('\n🛑 Received SIGINT (Ctrl+C)');
+    saveAllPositions();
+    process.exit(0);
+  });
+
+  process.on('SIGTERM', () => {
+    console.log('\n🛑 Received SIGTERM');
+    saveAllPositions();
+    process.exit(0);
+  });
+
+  // Handle uncaught exceptions - log crash and save state
+  process.on('uncaughtException', (error) => {
+    console.error('\n❌ Uncaught Exception:', error);
+    dataPersistence.logCrash(error, { type: 'uncaughtException' });
+    saveAllPositions();
+    process.exit(1);
+  });
+
+  process.on('unhandledRejection', (reason, promise) => {
+    const error = reason instanceof Error ? reason : new Error(String(reason));
+    console.error('\n❌ Unhandled Rejection:', error);
+    dataPersistence.logCrash(error, { type: 'unhandledRejection', promise: String(promise) });
+    // Don't exit on unhandled rejections, just log
+  });
+
   try {
     await screener.start();
     console.log('✅ Screener started');
 
-    // Periodic orphaned position price updates (every 30 seconds)
+    // Periodic real-time price updates for ALL positions (every 10 seconds)
+    // This ensures P&L is calculated from live ticker data, not stale candle closes
     setInterval(async () => {
+      // Update ALL positions with real-time prices (for trailing bots that have the new method)
+      // Use getPrice which handles both spot and futures markets
       await fixedTPBot.updateOrphanedPositions(getCurrentPrice);
-      await trailing1pctBot.updateOrphanedPositions(getCurrentPrice);
-      await trailing10pct10xBot.updateOrphanedPositions(getCurrentPrice);
-      await trailing10pct20xBot.updateOrphanedPositions(getCurrentPrice);
-      await trailWideBot.updateOrphanedPositions(getCurrentPrice);
+      await trailing1pctBot.updateAllPositionPrices(getPrice);
+      await trailing10pct10xBot.updateAllPositionPrices(getPrice);
+      await trailing10pct20xBot.updateAllPositionPrices(getPrice);
+      await trailWideBot.updateAllPositionPrices(getPrice);
       await confluenceBot.updateOrphanedPositions(getCurrentPrice);
       await tripleLightBot.updateOrphanedPositions(getCurrentPrice);
       await trendOverrideBot.updateOrphanedPositions(getCurrentPrice);
       await trendFlipBot.updateOrphanedPositions(getCurrentPrice, currentBtcBias);
+      // Update MEXC simulation bots (all positions, not just orphaned)
+      for (const [, bot] of mexcSimBots) {
+        await bot.updateAllPositionPrices(getCurrentPrice);
+      }
       broadcastState(); // Update clients with new prices
-    }, 30000);
+    }, 10000);
   } catch (error) {
     console.error('Failed to start screener:', error);
     process.exit(1);

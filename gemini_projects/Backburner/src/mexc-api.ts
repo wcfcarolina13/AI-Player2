@@ -141,7 +141,7 @@ export async function getKlines(
   });
 }
 
-// Get current price for a symbol
+// Get current price for a symbol (spot)
 export async function getCurrentPrice(symbol: string): Promise<number> {
   return rateLimiter.execute(async () => {
     const url = `${MEXC_API.BASE_URL}${MEXC_API.TICKER_PRICE}?symbol=${symbol}`;
@@ -149,6 +149,50 @@ export async function getCurrentPrice(symbol: string): Promise<number> {
     const data = await response.json();
     return parseFloat(data.price);
   });
+}
+
+// Cache for futures prices (refreshed every few seconds)
+let futuresPriceCache: Map<string, number> = new Map();
+let futuresPriceCacheTime = 0;
+const FUTURES_PRICE_CACHE_MS = 5000; // 5 second cache
+
+// Get current price for a futures symbol
+export async function getFuturesPrice(symbol: string): Promise<number | null> {
+  // symbol is like WALUSDT, need to convert to WAL_USDT
+  const futuresSymbol = spotSymbolToFutures(symbol);
+  if (!futuresSymbol) return null;
+
+  // Check if cache is fresh
+  const now = Date.now();
+  if (now - futuresPriceCacheTime > FUTURES_PRICE_CACHE_MS) {
+    // Refresh cache
+    try {
+      const tickers = await getFuturesTickers();
+      futuresPriceCache = new Map();
+      for (const ticker of tickers) {
+        futuresPriceCache.set(ticker.symbol, ticker.lastPrice);
+      }
+      futuresPriceCacheTime = now;
+    } catch (e) {
+      // If fetch fails, use stale cache if available
+    }
+  }
+
+  return futuresPriceCache.get(futuresSymbol) || null;
+}
+
+// Get current price for any symbol (spot or futures)
+export async function getPrice(symbol: string, marketType: 'spot' | 'futures'): Promise<number | null> {
+  if (marketType === 'futures') {
+    const futuresPrice = await getFuturesPrice(symbol);
+    if (futuresPrice) return futuresPrice;
+    // Fallback to spot if futures not available
+  }
+  try {
+    return await getCurrentPrice(symbol);
+  } catch (e) {
+    return null;
+  }
 }
 
 // Batch fetch klines for multiple symbols

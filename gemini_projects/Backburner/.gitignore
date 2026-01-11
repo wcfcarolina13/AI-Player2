@@ -18,5 +18,9 @@ credentials/
 *secret*
 
 # Data files (may contain trading history)
-data/*.json
+data/**/*.json
 !data/.gitkeep
+!data/**/.gitkeep
+
+# PM2 logs
+logs/

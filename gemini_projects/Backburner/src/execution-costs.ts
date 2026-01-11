@@ -44,21 +44,20 @@ export interface ExecutionCostsConfig {
 // Default configuration based on MEXC perpetual futures
 export const DEFAULT_EXECUTION_COSTS: ExecutionCostsConfig = {
   fees: {
-    // MEXC VIP0 rates - conservative (worst case for retail)
+    // MEXC Futures fees (standard retail rates)
+    // Grid bot observation: 0.67 USDT fees on 186 USDT over multiple fills
+    // For single trades, standard MEXC taker fee is ~0.02-0.04%
     makerFee: 0.0002,   // 0.02% maker fee
     takerFee: 0.0004,   // 0.04% taker fee (market orders)
   },
   slippage: {
-    // Conservative slippage without order book data
-    // These are higher than typical to account for:
-    // - Low liquidity altcoins
-    // - Fast-moving markets
-    // - Small account execution timing
-    baseSlippageBps: 5,           // 0.05% base slippage
-    volatilityMultiplier: 2.0,    // 2x slippage in volatile conditions
-    sizeImpactFactor: 1,          // +1bp per $10k notional (minimal for small accounts)
-    minSlippageBps: 2,            // Minimum 0.02% slippage
-    maxSlippageBps: 50,           // Maximum 0.50% slippage cap
+    // Minimal slippage for liquid pairs
+    // Real trading shows minimal slippage on most pairs
+    baseSlippageBps: 2,           // 0.02% base slippage
+    volatilityMultiplier: 1.5,    // 1.5x slippage in volatile conditions
+    sizeImpactFactor: 0.5,        // +0.5bp per $10k notional (minimal)
+    minSlippageBps: 1,            // Minimum 0.01% slippage floor
+    maxSlippageBps: 20,           // Maximum 0.20% slippage cap
   },
   funding: {
     // Perpetual futures funding rates

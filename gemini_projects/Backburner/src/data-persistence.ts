@@ -10,10 +10,12 @@ const TRADES_DIR = path.join(DATA_DIR, 'trades');
 const DAILY_DIR = path.join(DATA_DIR, 'daily');
 const MARKET_DIR = path.join(DATA_DIR, 'market');
 const CONFIGS_DIR = path.join(DATA_DIR, 'configs');
+const POSITIONS_DIR = path.join(DATA_DIR, 'positions');
+const CRASHES_DIR = path.join(DATA_DIR, 'crashes');
 
 // Ensure directories exist
 function ensureDirectories(): void {
-  for (const dir of [DATA_DIR, SIGNALS_DIR, TRADES_DIR, DAILY_DIR, MARKET_DIR, CONFIGS_DIR]) {
+  for (const dir of [DATA_DIR, SIGNALS_DIR, TRADES_DIR, DAILY_DIR, MARKET_DIR, CONFIGS_DIR, POSITIONS_DIR, CRASHES_DIR]) {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
@@ -832,6 +834,98 @@ export class DataPersistence {
     prompt += `5. Are there any concerning patterns or anomalies?\n`;
 
     return prompt;
+  }
+
+  /**
+   * Save bot positions to disk (for persistence across restarts)
+   */
+  savePositions(botId: string, positions: unknown[], closedPositions: unknown[], balance: number, peakBalance: number): void {
+    const positionFile = path.join(POSITIONS_DIR, `${botId}.json`);
+    const data = {
+      botId,
+      savedAt: new Date().toISOString(),
+      balance,
+      peakBalance,
+      openPositions: positions,
+      closedPositions: closedPositions.slice(-100), // Keep last 100 closed positions
+    };
+    try {
+      fs.writeFileSync(positionFile, JSON.stringify(data, null, 2));
+    } catch (e) {
+      console.error(`Failed to save positions for ${botId}:`, e);
+    }
+  }
+
+  /**
+   * Load bot positions from disk
+   */
+  loadPositions(botId: string): {
+    openPositions: unknown[];
+    closedPositions: unknown[];
+    balance: number;
+    peakBalance: number;
+    savedAt: string;
+  } | null {
+    const positionFile = path.join(POSITIONS_DIR, `${botId}.json`);
+    if (!fs.existsSync(positionFile)) {
+      return null;
+    }
+    try {
+      const data = JSON.parse(fs.readFileSync(positionFile, 'utf-8'));
+      console.log(`Loaded ${data.openPositions?.length || 0} open positions for ${botId} (saved at ${data.savedAt})`);
+      return {
+        openPositions: data.openPositions || [],
+        closedPositions: data.closedPositions || [],
+        balance: data.balance,
+        peakBalance: data.peakBalance,
+        savedAt: data.savedAt,
+      };
+    } catch (e) {
+      console.error(`Failed to load positions for ${botId}:`, e);
+      return null;
+    }
+  }
+
+  /**
+   * Log a crash event with full details
+   */
+  logCrash(error: Error, context?: Record<string, unknown>): void {
+    const timestamp = getTimestamp();
+    const crashFile = path.join(CRASHES_DIR, `crash-${timestamp}.json`);
+    const data = {
+      timestamp: new Date().toISOString(),
+      error: {
+        name: error.name,
+        message: error.message,
+        stack: error.stack,
+      },
+      context: context || {},
+      nodeVersion: process.version,
+      platform: process.platform,
+      memoryUsage: process.memoryUsage(),
+      uptime: process.uptime(),
+    };
+    try {
+      fs.writeFileSync(crashFile, JSON.stringify(data, null, 2));
+      console.error(`Crash logged to ${crashFile}`);
+    } catch (e) {
+      console.error('Failed to log crash:', e);
+    }
+  }
+
+  /**
+   * Get all crash logs
+   */
+  getCrashLogs(): Array<{ file: string; data: unknown }> {
+    try {
+      const files = fs.readdirSync(CRASHES_DIR).filter(f => f.endsWith('.json'));
+      return files.map(file => ({
+        file,
+        data: JSON.parse(fs.readFileSync(path.join(CRASHES_DIR, file), 'utf-8')),
+      }));
+    } catch {
+      return [];
+    }
   }
 
   /**

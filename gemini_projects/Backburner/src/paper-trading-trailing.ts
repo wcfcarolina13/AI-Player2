@@ -446,6 +446,19 @@ export class TrailingStopEngine {
   private closePosition(position: TrailingPosition, status: TrailingPositionStatus, reason: string): void {
     const key = `${position.symbol}-${position.timeframe}-${position.direction}-${position.marketType}`;
 
+    // Guard: Check if position is still open (prevent duplicate closes)
+    if (!this.positions.has(key)) {
+      return; // Already closed
+    }
+
+    // Guard: Check if already closed (status already set)
+    if (position.status !== 'open') {
+      return; // Already closed
+    }
+
+    // IMPORTANT: Remove from positions map FIRST to prevent duplicate closes
+    this.positions.delete(key);
+
     // Calculate raw PnL (before costs)
     const priceChange = position.direction === 'long'
       ? (position.currentPrice - position.entryPrice) / position.entryPrice
@@ -504,7 +517,7 @@ export class TrailingStopEngine {
       funding: fundingPaid.toFixed(2),
     }, true);
 
-    this.positions.delete(key);
+    // Position already removed from map at start of function
     this.closedPositions.push(position);
 
     // Log to data persistence
@@ -583,6 +596,111 @@ export class TrailingStopEngine {
             } else {
               position.currentStopLossPrice = position.entryPrice * (1 - lockedPriceRatio);
             }
+
+            position.trailLevel = newTrailLevel;
+          }
+        }
+
+        // Check stop loss
+        if (position.direction === 'long') {
+          if (currentPrice <= position.currentStopLossPrice) {
+            const reason = position.trailLevel > 0
+              ? `Trailing Stop Hit (Level ${position.trailLevel})`
+              : 'Initial Stop Loss Hit';
+            const status = position.trailLevel > 0 ? 'closed_trail_stop' : 'closed_sl';
+            this.closePosition(position, status, reason);
+          }
+        } else {
+          if (currentPrice >= position.currentStopLossPrice) {
+            const reason = position.trailLevel > 0
+              ? `Trailing Stop Hit (Level ${position.trailLevel})`
+              : 'Initial Stop Loss Hit';
+            const status = position.trailLevel > 0 ? 'closed_trail_stop' : 'closed_sl';
+            this.closePosition(position, status, reason);
+          }
+        }
+      } catch (error) {
+        // Silently fail - will retry next cycle
+      }
+    }
+  }
+
+  /**
+   * Update ALL open positions with real-time prices (not just orphaned)
+   * This ensures P&L is always calculated from live ticker data, not stale candle closes
+   */
+  async updateAllPositionPrices(getPriceFn: (symbol: string, marketType: MarketType) => Promise<number | null>): Promise<void> {
+    for (const [key, position] of this.positions) {
+      try {
+        const currentPrice = await getPriceFn(position.symbol, position.marketType);
+        if (currentPrice === null) continue;
+        position.currentPrice = currentPrice;
+
+        // Calculate raw P&L
+        const priceChange = position.direction === 'long'
+          ? (currentPrice - position.entryPrice) / position.entryPrice
+          : (position.entryPrice - currentPrice) / position.entryPrice;
+
+        const rawPnL = position.notionalSize * priceChange;
+
+        // Calculate holding time for funding estimate
+        const holdingTimeMs = Date.now() - position.entryTime;
+
+        // Calculate estimated exit costs
+        const { exitCosts } = this.costsCalculator.calculateExitCosts(
+          currentPrice,
+          position.notionalSize,
+          position.direction,
+          this.currentVolatility
+        );
+
+        // Calculate funding paid so far
+        const fundingPaid = this.costsCalculator.calculateFunding(
+          position.notionalSize,
+          position.direction,
+          holdingTimeMs,
+          this.currentMarketBias
+        );
+
+        // Update position with costs
+        position.fundingPaid = fundingPaid;
+
+        // Unrealized PnL includes entry costs (already paid), estimated exit costs, and funding
+        const estimatedTotalCosts = position.entryCosts + exitCosts + fundingPaid;
+        position.unrealizedPnL = rawPnL - estimatedTotalCosts;
+        position.unrealizedPnLPercent = (position.unrealizedPnL / position.notionalSize) * 100;
+
+        // Calculate ROI for trailing stop logic
+        const roi = position.marginUsed > 0 ? (rawPnL / position.marginUsed) * 100 : 0;
+
+        // Update high water mark
+        if (roi > position.highWaterMark) {
+          position.highWaterMark = roi;
+        }
+
+        // Check trailing stop adjustment
+        const triggerThreshold = this.config.trailTriggerPercent;
+        const stepSize = this.config.trailStepPercent;
+
+        if (position.highWaterMark >= triggerThreshold) {
+          const newTrailLevel = Math.floor((position.highWaterMark - triggerThreshold) / stepSize) + 1;
+
+          if (newTrailLevel > position.trailLevel) {
+            const level1Lock = this.config.level1LockPercent;
+            const lockedROIPercent = level1Lock + (newTrailLevel - 1) * stepSize;
+            const lockedPriceRatio = lockedROIPercent / 100 / position.leverage;
+
+            if (position.direction === 'long') {
+              position.currentStopLossPrice = position.entryPrice * (1 + lockedPriceRatio);
+            } else {
+              position.currentStopLossPrice = position.entryPrice * (1 - lockedPriceRatio);
+            }
+
+            debugLog(this.botId, `TRAIL ADJUSTED (price update): ${position.symbol} Level ${position.trailLevel} → ${newTrailLevel}`, {
+              key,
+              roi: roi.toFixed(2),
+              hwm: position.highWaterMark.toFixed(2),
+            }, true);
 
             position.trailLevel = newTrailLevel;
           }
@@ -703,5 +821,46 @@ export class TrailingStopEngine {
     this.closedPositions = [];
     this.balance = this.config.initialBalance;
     this.peakBalance = this.config.initialBalance;
+  }
+
+  /**
+   * Save positions to disk for persistence across restarts
+   */
+  saveState(): void {
+    const positions = Array.from(this.positions.values());
+    getDataPersistence().savePositions(
+      this.botId,
+      positions,
+      this.closedPositions,
+      this.balance,
+      this.peakBalance
+    );
+  }
+
+  /**
+   * Load positions from disk after restart
+   */
+  loadState(): boolean {
+    const data = getDataPersistence().loadPositions(this.botId);
+    if (!data) {
+      return false;
+    }
+
+    // Restore positions
+    this.positions.clear();
+    for (const pos of data.openPositions as TrailingPosition[]) {
+      const key = `${pos.symbol}-${pos.timeframe}-${pos.direction}-${pos.marketType}`;
+      this.positions.set(key, pos);
+    }
+
+    // Restore closed positions
+    this.closedPositions = data.closedPositions as TrailingPosition[];
+
+    // Restore balance
+    this.balance = data.balance;
+    this.peakBalance = data.peakBalance;
+
+    console.log(`[${this.botId}] Restored state: ${this.positions.size} open, ${this.closedPositions.length} closed, balance: $${this.balance.toFixed(2)}`);
+    return true;
   }
 }

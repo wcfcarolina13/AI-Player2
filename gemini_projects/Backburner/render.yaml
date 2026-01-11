@@ -1,0 +1,14 @@
+# Render Blueprint
+services:
+  - type: web
+    name: backburner
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: oregon
+    healthCheckPath: /api/state
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000

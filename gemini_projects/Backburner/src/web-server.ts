@@ -674,6 +674,7 @@ function getFullState() {
   const allSetups = screener.getAllSetups();
   const activeSetups = screener.getActiveSetups();
   const playedOutSetups = screener.getPlayedOutSetups();
+  const goldenPocketSetups = screener.getGoldenPocketSetups();
 
   return {
     setups: {
@@ -694,6 +695,7 @@ function getFullState() {
         spot: allSetups.filter(s => s.marketType === 'spot').length,
         futures: allSetups.filter(s => s.marketType === 'futures').length,
       },
+      goldenPocket: goldenPocketSetups,
     },
     // Bot 1: Fixed TP/SL (1% position, 10x leverage)
     fixedTPBot: {
@@ -2276,6 +2278,9 @@ function getHtmlPage(): string {
           <button class="tab-btn" id="tabAll" onclick="setSetupsTab('all')" style="padding: 4px 12px; border-radius: 4px; border: 1px solid #30363d; background: #21262d; color: #8b949e; font-size: 12px; cursor: pointer;">
             All <span id="allCount">0</span>
           </button>
+          <button class="tab-btn" id="tabGoldenPocket" onclick="setSetupsTab('goldenPocket')" style="padding: 4px 12px; border-radius: 4px; border: 1px solid #f0883e; background: #21262d; color: #f0883e; font-size: 12px; cursor: pointer;">
+            🎯 GP <span id="gpCount">0</span>
+          </button>
         </div>
       </div>
       <div id="setupsTable">
@@ -2706,7 +2711,7 @@ function getHtmlPage(): string {
 
     // Setups tab state
     let currentSetupsTab = 'active';
-    let allSetupsData = { all: [], active: [], playedOut: [], history: [] };
+    let allSetupsData = { all: [], active: [], playedOut: [], history: [], goldenPocket: [] };
 
     function setSetupsTab(tab) {
       currentSetupsTab = tab;
@@ -2717,7 +2722,10 @@ function getHtmlPage(): string {
       });
       const activeBtn = document.getElementById('tab' + tab.charAt(0).toUpperCase() + tab.slice(1));
       if (activeBtn) {
-        activeBtn.style.background = tab === 'playedOut' ? '#6e7681' : tab === 'history' ? '#8957e5' : '#238636';
+        const bgColor = tab === 'playedOut' ? '#6e7681' :
+                        tab === 'history' ? '#8957e5' :
+                        tab === 'goldenPocket' ? '#f0883e' : '#238636';
+        activeBtn.style.background = bgColor;
         activeBtn.style.color = 'white';
       }
       // Re-render setups table with current filter
@@ -2732,10 +2740,54 @@ function getHtmlPage(): string {
         setups = allSetupsData.playedOut;
       } else if (currentSetupsTab === 'history') {
         setups = allSetupsData.history;
+      } else if (currentSetupsTab === 'goldenPocket') {
+        setups = allSetupsData.goldenPocket;
+        document.getElementById('setupsTable').innerHTML = renderGoldenPocketTable(setups);
+        return;
       } else {
         setups = allSetupsData.all;
       }
       document.getElementById('setupsTable').innerHTML = renderSetupsTable(setups, currentSetupsTab);
+    }
+
+    function renderGoldenPocketTable(setups) {
+      if (!setups || setups.length === 0) {
+        return '<div class="empty-state">No Golden Pocket setups detected</div>';
+      }
+
+      let html = '<table style="width: 100%; border-collapse: collapse; font-size: 12px;">';
+      html += '<thead><tr style="border-bottom: 1px solid #30363d;">';
+      html += '<th style="text-align: left; padding: 8px; color: #8b949e;">Symbol</th>';
+      html += '<th style="text-align: left; padding: 8px; color: #8b949e;">Dir</th>';
+      html += '<th style="text-align: left; padding: 8px; color: #8b949e;">TF</th>';
+      html += '<th style="text-align: left; padding: 8px; color: #8b949e;">State</th>';
+      html += '<th style="text-align: right; padding: 8px; color: #8b949e;">Retrace%</th>';
+      html += '<th style="text-align: right; padding: 8px; color: #8b949e;">Entry Zone</th>';
+      html += '<th style="text-align: right; padding: 8px; color: #8b949e;">TP1</th>';
+      html += '<th style="text-align: right; padding: 8px; color: #8b949e;">Stop</th>';
+      html += '</tr></thead><tbody>';
+
+      for (const s of setups) {
+        const dirColor = s.direction === 'long' ? '#3fb950' : '#f85149';
+        const dirIcon = s.direction === 'long' ? '📈' : '📉';
+        const stateColor = s.state === 'triggered' ? '#3fb950' :
+                           s.state === 'deep_extreme' ? '#f0883e' :
+                           s.state === 'reversing' ? '#58a6ff' : '#8b949e';
+
+        html += '<tr style="border-bottom: 1px solid #21262d;">';
+        html += '<td style="padding: 8px; font-weight: 600;">' + s.symbol.replace('USDT', '') + '</td>';
+        html += '<td style="padding: 8px; color: ' + dirColor + ';">' + dirIcon + ' ' + s.direction.toUpperCase() + '</td>';
+        html += '<td style="padding: 8px;">' + s.timeframe + '</td>';
+        html += '<td style="padding: 8px; color: ' + stateColor + ';">' + s.state + '</td>';
+        html += '<td style="padding: 8px; text-align: right;">' + (s.retracementPercent * 100).toFixed(1) + '%</td>';
+        html += '<td style="padding: 8px; text-align: right; color: #f0883e;">' + (s.fibLevels?.level618?.toFixed(6) || '-') + ' - ' + (s.fibLevels?.level65?.toFixed(6) || '-') + '</td>';
+        html += '<td style="padding: 8px; text-align: right; color: #3fb950;">' + (s.tp1Price?.toFixed(6) || '-') + '</td>';
+        html += '<td style="padding: 8px; text-align: right; color: #f85149;">' + (s.stopPrice?.toFixed(6) || '-') + '</td>';
+        html += '</tr>';
+      }
+
+      html += '</tbody></table>';
+      return html;
     }
 
     // Focus Mode functions
@@ -3056,11 +3108,13 @@ function getHtmlPage(): string {
         active: state.setups.active,
         playedOut: state.setups.playedOut,
         history: state.setups.history || [],
+        goldenPocket: state.setups.goldenPocket || [],
       };
       document.getElementById('activeCount').textContent = state.setups.active.length;
       document.getElementById('playedOutCount').textContent = state.setups.playedOut.length;
       document.getElementById('historyCount').textContent = (state.setups.history || []).length;
       document.getElementById('allCount').textContent = state.setups.all.length;
+      document.getElementById('gpCount').textContent = (state.setups.goldenPocket || []).length;
 
       // Render setups table based on current tab
       renderSetupsWithTab();

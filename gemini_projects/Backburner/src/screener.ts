@@ -842,6 +842,13 @@ export class BackburnerScreener {
   }
 
   /**
+   * Get active Golden Pocket setups
+   */
+  getGoldenPocketSetups(): import('./golden-pocket-detector.js').GoldenPocketSetup[] {
+    return this.goldenPocketDetector.getActiveSetups();
+  }
+
+  /**
    * Get setups filtered by timeframe
    */
   getSetupsByTimeframe(timeframe: Timeframe): BackburnerSetup[] {

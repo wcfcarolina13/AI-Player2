@@ -1,6 +1,133 @@
 import type { Candle, RSIResult } from './types.js';
 
 /**
+ * Fibonacci retracement levels for a price range
+ */
+export interface FibonacciLevels {
+  // For upward impulse: high is 0.0, low is 1.0
+  // For downward impulse: low is 0.0, high is 1.0
+  high: number;
+  low: number;
+  direction: 'up' | 'down';
+
+  // Standard Fibonacci retracement levels
+  level236: number;  // 23.6% retracement
+  level382: number;  // 38.2% retracement (first TP for longs)
+  level500: number;  // 50% retracement
+  level618: number;  // 61.8% retracement (Golden Pocket top)
+  level650: number;  // 65% retracement (Golden Pocket middle)
+  level786: number;  // 78.6% retracement (invalidation level)
+
+  // Golden Pocket zone
+  goldenPocketTop: number;     // 0.618 level
+  goldenPocketBottom: number;  // 0.65 level
+  invalidationLevel: number;   // 0.786 level
+}
+
+/**
+ * Calculate Fibonacci retracement levels from a swing high/low
+ * For LONG setups (upward impulse): retracement is from high back toward low
+ * For SHORT setups (downward impulse): retracement is from low back toward high
+ */
+export function calculateFibonacciLevels(
+  high: number,
+  low: number,
+  direction: 'up' | 'down'
+): FibonacciLevels {
+  const range = high - low;
+
+  if (direction === 'up') {
+    // For upward impulse, retracement goes DOWN from high toward low
+    // 0.0 = swing high (start of retracement)
+    // 1.0 = swing low (full retracement)
+    return {
+      high,
+      low,
+      direction,
+      level236: high - (range * 0.236),
+      level382: high - (range * 0.382),
+      level500: high - (range * 0.500),
+      level618: high - (range * 0.618),
+      level650: high - (range * 0.650),
+      level786: high - (range * 0.786),
+      goldenPocketTop: high - (range * 0.618),
+      goldenPocketBottom: high - (range * 0.650),
+      invalidationLevel: high - (range * 0.786),
+    };
+  } else {
+    // For downward impulse, retracement goes UP from low toward high
+    // 0.0 = swing low (start of retracement)
+    // 1.0 = swing high (full retracement)
+    return {
+      high,
+      low,
+      direction,
+      level236: low + (range * 0.236),
+      level382: low + (range * 0.382),
+      level500: low + (range * 0.500),
+      level618: low + (range * 0.618),
+      level650: low + (range * 0.650),
+      level786: low + (range * 0.786),
+      goldenPocketTop: low + (range * 0.618),
+      goldenPocketBottom: low + (range * 0.650),
+      invalidationLevel: low + (range * 0.786),
+    };
+  }
+}
+
+/**
+ * Check if price is in the Golden Pocket zone (0.618 - 0.65)
+ */
+export function isInGoldenPocket(
+  price: number,
+  fibLevels: FibonacciLevels
+): boolean {
+  if (fibLevels.direction === 'up') {
+    // For longs: price should be between 0.618 and 0.65 (below the top)
+    return price <= fibLevels.goldenPocketTop && price >= fibLevels.goldenPocketBottom;
+  } else {
+    // For shorts: price should be between 0.618 and 0.65 (above the bottom)
+    return price >= fibLevels.goldenPocketTop && price <= fibLevels.goldenPocketBottom;
+  }
+}
+
+/**
+ * Check if price has broken the invalidation level (0.786)
+ */
+export function isInvalidated(
+  price: number,
+  fibLevels: FibonacciLevels
+): boolean {
+  if (fibLevels.direction === 'up') {
+    // For longs: invalidated if price closes below 0.786
+    return price < fibLevels.invalidationLevel;
+  } else {
+    // For shorts: invalidated if price closes above 0.786
+    return price > fibLevels.invalidationLevel;
+  }
+}
+
+/**
+ * Calculate where price is relative to Fibonacci levels
+ * Returns the retracement percentage (0 = swing high/low, 100 = swing low/high)
+ */
+export function getFibRetracementPercent(
+  price: number,
+  fibLevels: FibonacciLevels
+): number {
+  const range = fibLevels.high - fibLevels.low;
+  if (range === 0) return 0;
+
+  if (fibLevels.direction === 'up') {
+    // For upward impulse, measure how far price has retraced from high
+    return ((fibLevels.high - price) / range) * 100;
+  } else {
+    // For downward impulse, measure how far price has retraced from low
+    return ((price - fibLevels.low) / range) * 100;
+  }
+}
+
+/**
  * Calculate RSI (Relative Strength Index)
  * Uses Wilder's smoothing method (exponential moving average)
  */

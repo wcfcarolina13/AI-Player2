@@ -15,6 +15,7 @@ import { createMexcSimulationBots } from './mexc-trailing-simulation.js';
 import { NotificationManager } from './notifications.js';
 import { FocusModeManager, getFocusModeManager } from './focus-mode.js';
 import { BackburnerDetector } from './backburner-detector.js';
+import { GoldenPocketBot } from './golden-pocket-bot.js';
 import { getKlines, getFuturesKlines, spotSymbolToFutures, getCurrentPrice, getPrice } from './mexc-api.js';
 import { getCurrentRSI, calculateRSI, calculateSMA, detectDivergence } from './indicators.js';
 import { DEFAULT_CONFIG } from './config.js';
@@ -56,6 +57,11 @@ const botVisibility: Record<string, boolean> = {
   'mexc-wide-2cb': true,
   'mexc-standard': true,
   'mexc-standard-05cb': true,
+  // Golden Pocket bots (Fibonacci hype strategy - 4 variants)
+  'gp-conservative': true,
+  'gp-standard': true,
+  'gp-aggressive': true,
+  'gp-yolo': true,
 };
 
 // Setup history (keeps removed setups for longer viewing)
@@ -233,6 +239,50 @@ const btcBiasBots = createBtcBiasBots(2000);
 // Simulates MEXC's continuous trailing stop behavior for comparison with our discrete levels
 const mexcSimBots = createMexcSimulationBots(2000);
 
+// Bots 26-29: Golden Pocket Bots (Fibonacci hype strategy)
+// Targets coins with sudden volatility spikes, enters on 0.618-0.65 retracement
+// Multiple variants with different leverage and position sizing
+
+// GP Bot 1: Conservative (5% pos, 10x leverage)
+const gpConservativeBot = new GoldenPocketBot({
+  initialBalance: 2000,
+  positionSizePercent: 5,
+  leverage: 10,
+  maxOpenPositions: 10,
+}, 'gp-conservative');
+
+// GP Bot 2: Standard (10% pos, 10x leverage)
+const gpStandardBot = new GoldenPocketBot({
+  initialBalance: 2000,
+  positionSizePercent: 10,
+  leverage: 10,
+  maxOpenPositions: 10,
+}, 'gp-standard');
+
+// GP Bot 3: Aggressive (10% pos, 20x leverage)
+const gpAggressiveBot = new GoldenPocketBot({
+  initialBalance: 2000,
+  positionSizePercent: 10,
+  leverage: 20,
+  maxOpenPositions: 10,
+}, 'gp-aggressive');
+
+// GP Bot 4: YOLO (20% pos, 20x leverage)
+const gpYoloBot = new GoldenPocketBot({
+  initialBalance: 2000,
+  positionSizePercent: 20,
+  leverage: 20,
+  maxOpenPositions: 5,
+}, 'gp-yolo');
+
+// Collect all GP bots for easy iteration
+const goldenPocketBots = new Map([
+  ['gp-conservative', gpConservativeBot],
+  ['gp-standard', gpStandardBot],
+  ['gp-aggressive', gpAggressiveBot],
+  ['gp-yolo', gpYoloBot],
+]);
+
 const notifier = new NotificationManager({
   enabled: true,
   sound: true,
@@ -315,6 +365,14 @@ async function handleNewSetup(setup: BackburnerSetup) {
 
   // Try MEXC simulation bots
   for (const [botId, bot] of mexcSimBots) {
+    const position = bot.openPosition(setup);
+    if (position) {
+      broadcast('position_opened', { bot: botId, position });
+    }
+  }
+
+  // Try all Golden Pocket bots (only process setups that have fibLevels from the GP detector)
+  for (const [botId, bot] of goldenPocketBots) {
     const position = bot.openPosition(setup);
     if (position) {
       broadcast('position_opened', { bot: botId, position });
@@ -424,6 +482,25 @@ async function handleSetupUpdated(setup: BackburnerSetup) {
           broadcast('position_opened', { bot: botId, position });
           newlyOpened = true;
         }
+      }
+    }
+  }
+
+  // Update all Golden Pocket positions and try to open new ones
+  for (const [botId, bot] of goldenPocketBots) {
+    let gpPosition = bot.updatePosition(setup);
+    if (!gpPosition && (setup.state === 'triggered' || setup.state === 'deep_extreme')) {
+      gpPosition = bot.openPosition(setup);
+      if (gpPosition) {
+        broadcast('position_opened', { bot: botId, position: gpPosition });
+        newlyOpened = true;
+      }
+    }
+    if (gpPosition) {
+      if (gpPosition.status !== 'open' && gpPosition.status !== 'partial_tp1') {
+        broadcast('position_closed', { bot: botId, position: gpPosition });
+      } else {
+        broadcast('position_updated', { bot: botId, position: gpPosition });
       }
     }
   }
@@ -560,6 +637,11 @@ function handleSetupRemoved(setup: BackburnerSetup) {
 
   // Handle MEXC simulation bots
   for (const [botId, bot] of mexcSimBots) {
+    bot.onSetupRemoved(setup);
+  }
+
+  // Handle all Golden Pocket bots
+  for (const [, bot] of goldenPocketBots) {
     bot.onSetupRemoved(setup);
   }
 
@@ -777,6 +859,27 @@ function getFullState() {
           unrealizedPnL: bot.getUnrealizedPnL(),
           openPositions: bot.getOpenPositions(),
           closedPositions: bot.getClosedPositions(),
+          stats: bot.getStats(),
+          visible: botVisibility[key],
+        },
+      ])
+    ),
+    // Bots 26-29: Golden Pocket (Fibonacci hype strategy - 4 variants)
+    goldenPocketBots: Object.fromEntries(
+      Array.from(goldenPocketBots.entries()).map(([key, bot]) => [
+        key,
+        {
+          name: key === 'gp-conservative' ? 'GP Conservative' :
+                key === 'gp-standard' ? 'GP Standard' :
+                key === 'gp-aggressive' ? 'GP Aggressive' :
+                'GP YOLO',
+          description: key === 'gp-conservative' ? '5% pos, 10x, Fib TP/SL' :
+                       key === 'gp-standard' ? '10% pos, 10x, Fib TP/SL' :
+                       key === 'gp-aggressive' ? '10% pos, 20x, Fib TP/SL' :
+                       '20% pos, 20x, Fib TP/SL',
+          balance: bot.getBalance(),
+          openPositions: bot.getOpenPositions(),
+          closedPositions: bot.getClosedPositions(20),
           stats: bot.getStats(),
           visible: botVisibility[key],
         },
@@ -2047,6 +2150,39 @@ function getHtmlPage(): string {
       </div>
     </div>
 
+    <!-- Section: Golden Pocket Bots -->
+    <div class="section-header" onclick="toggleSection('goldenPocket')" style="margin-top: 12px;">
+      <span class="section-title">🎯 Golden Pocket Bots (4)</span>
+      <span class="section-toggle" id="goldenPocketToggle">▼</span>
+    </div>
+    <div class="section-content" id="goldenPocketContent">
+      <div style="font-size: 11px; color: #8b949e; margin-bottom: 8px; padding: 6px 10px; background: #0d1117; border-radius: 4px;">
+        Fibonacci retracement strategy: Entry at 0.618-0.65, TP1 at 0.382 (50%), TP2 at swing high (50%), SL at 0.786.
+      </div>
+      <div class="stats-grid" style="grid-template-columns: repeat(4, 1fr); margin-bottom: 12px;">
+        <div class="stat-box" style="border-left: 3px solid #4caf50;">
+          <div class="stat-value" id="gpConservativeBalance" style="font-size: 16px;">$2,000</div>
+          <div class="stat-label">Conservative 5% 10x | <span id="gpConservativePnL" class="positive">$0</span></div>
+          <div class="stat-label" style="margin-top: 2px;"><span id="gpConservativeWinRate">0%</span> win | <span id="gpConservativeTP1Rate">0%</span> TP1</div>
+        </div>
+        <div class="stat-box" style="border-left: 3px solid #8bc34a;">
+          <div class="stat-value" id="gpStandardBalance" style="font-size: 16px;">$2,000</div>
+          <div class="stat-label">Standard 10% 10x | <span id="gpStandardPnL" class="positive">$0</span></div>
+          <div class="stat-label" style="margin-top: 2px;"><span id="gpStandardWinRate">0%</span> win | <span id="gpStandardTP1Rate">0%</span> TP1</div>
+        </div>
+        <div class="stat-box" style="border-left: 3px solid #ff9800;">
+          <div class="stat-value" id="gpAggressiveBalance" style="font-size: 16px;">$2,000</div>
+          <div class="stat-label">Aggressive 10% 20x | <span id="gpAggressivePnL" class="positive">$0</span></div>
+          <div class="stat-label" style="margin-top: 2px;"><span id="gpAggressiveWinRate">0%</span> win | <span id="gpAggressiveTP1Rate">0%</span> TP1</div>
+        </div>
+        <div class="stat-box" style="border-left: 3px solid #f44336;">
+          <div class="stat-value" id="gpYoloBalance" style="font-size: 16px;">$2,000</div>
+          <div class="stat-label">YOLO 20% 20x | <span id="gpYoloPnL" class="positive">$0</span></div>
+          <div class="stat-label" style="margin-top: 2px;"><span id="gpYoloWinRate">0%</span> win | <span id="gpYoloTP1Rate">0%</span> TP1</div>
+        </div>
+      </div>
+    </div>
+
     <!-- Setups Card with Tabs -->
     <div class="card" style="margin-bottom: 20px;">
       <div class="card-header" style="flex-wrap: wrap; gap: 12px;">
@@ -2401,6 +2537,7 @@ function getHtmlPage(): string {
       btcBiasBots: true,
       btcBiasStats: true,
       mexcSim: true,
+      goldenPocket: true,
     };
 
     function toggleSection(sectionId) {
@@ -3064,6 +3201,32 @@ function getHtmlPage(): string {
             }
             if (winRateEl) winRateEl.textContent = bot.stats.winRate.toFixed(0) + '%';
             if (trailingEl) trailingEl.textContent = bot.stats.trailingActivatedCount || 0;
+          }
+        }
+      }
+
+      // Update Golden Pocket bots stats (Bots 26-29)
+      if (state.goldenPocketBots) {
+        const gpKeyMap = {
+          'gp-conservative': 'gpConservative',
+          'gp-standard': 'gpStandard',
+          'gp-aggressive': 'gpAggressive',
+          'gp-yolo': 'gpYolo',
+        };
+        for (const [key, elementId] of Object.entries(gpKeyMap)) {
+          const bot = state.goldenPocketBots[key];
+          if (bot) {
+            const balEl = document.getElementById(elementId + 'Balance');
+            const pnlEl = document.getElementById(elementId + 'PnL');
+            const winRateEl = document.getElementById(elementId + 'WinRate');
+            const tp1RateEl = document.getElementById(elementId + 'TP1Rate');
+            if (balEl) balEl.textContent = formatCurrency(bot.balance);
+            if (pnlEl) {
+              pnlEl.textContent = formatCurrency(bot.stats.totalPnL);
+              pnlEl.className = bot.stats.totalPnL >= 0 ? 'positive' : 'negative';
+            }
+            if (winRateEl) winRateEl.textContent = bot.stats.winRate.toFixed(0) + '%';
+            if (tp1RateEl) tp1RateEl.textContent = (bot.stats.tp1HitRate || 0).toFixed(0) + '%';
           }
         }
       }

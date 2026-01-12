@@ -61,6 +61,10 @@ class RateLimiter {
 // Being slightly conservative to avoid edge cases
 const rateLimiter = new RateLimiter(15, 30);
 
+// Futures API has stricter rate limits - use very conservative settings
+// Only 2 concurrent requests with 250ms minimum delay to avoid 510 errors
+const futuresRateLimiter = new RateLimiter(2, 250);
+
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -291,38 +295,73 @@ const FUTURES_INTERVAL: Record<Timeframe, string> = {
   '1d': 'Day1',
 };
 
-// Get futures klines
+// Get futures klines with rate limit retry
 export async function getFuturesKlines(
   symbol: string,
   timeframe: Timeframe,
   limit = CANDLES_TO_FETCH
 ): Promise<Candle[]> {
-  return rateLimiter.execute(async () => {
+  return futuresRateLimiter.execute(async () => {
     const interval = FUTURES_INTERVAL[timeframe];
     const url = `${MEXC_FUTURES_API}/api/v1/contract/kline/${symbol}?interval=${interval}&limit=${limit}`;
 
-    const response = await fetchWithRetry(url);
-    const data = await response.json();
+    // Retry loop for rate limit errors
+    const maxRetries = 3;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const response = await fetchWithRetry(url);
+      const data = await response.json();
 
-    if (!data.success || !Array.isArray(data.data?.time)) {
-      throw new Error(`Invalid futures kline response for ${symbol}`);
+      // Check for rate limit error (code 510)
+      if (data.code === 510) {
+        if (attempt < maxRetries - 1) {
+          // Wait longer on each retry: 500ms, 1000ms, 1500ms
+          await sleep(500 * (attempt + 1));
+          continue;
+        }
+        // Final attempt failed - log debug info
+        console.error(`[DEBUG] Futures kline failed for ${symbol}:`, JSON.stringify({
+          success: data.success,
+          code: data.code,
+          message: data.message,
+          hasData: !!data.data,
+          hasTime: !!data.data?.time,
+          url: url.replace(MEXC_FUTURES_API, ''),
+        }));
+        throw new Error(`Rate limited: ${symbol}`);
+      }
+
+      if (!data.success || !Array.isArray(data.data?.time)) {
+        // Non-rate-limit error - log and throw
+        console.error(`[DEBUG] Futures kline failed for ${symbol}:`, JSON.stringify({
+          success: data.success,
+          code: data.code,
+          message: data.message,
+          hasData: !!data.data,
+          hasTime: !!data.data?.time,
+          url: url.replace(MEXC_FUTURES_API, ''),
+        }));
+        throw new Error(`Invalid futures kline response for ${symbol}`);
+      }
+
+      // Success - parse and return
+      const klineData = data.data;
+      const candles: Candle[] = [];
+
+      for (let i = 0; i < klineData.time.length; i++) {
+        candles.push({
+          timestamp: klineData.time[i] * 1000, // Convert to milliseconds
+          open: klineData.open[i],
+          high: klineData.high[i],
+          low: klineData.low[i],
+          close: klineData.close[i],
+          volume: klineData.vol[i],
+        });
+      }
+
+      return candles;
     }
 
-    const klineData = data.data;
-    const candles: Candle[] = [];
-
-    for (let i = 0; i < klineData.time.length; i++) {
-      candles.push({
-        timestamp: klineData.time[i] * 1000, // Convert to milliseconds
-        open: klineData.open[i],
-        high: klineData.high[i],
-        low: klineData.low[i],
-        close: klineData.close[i],
-        volume: klineData.vol[i],
-      });
-    }
-
-    return candles;
+    throw new Error(`Failed to fetch futures klines for ${symbol}`);
   });
 }
 

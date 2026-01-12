@@ -1771,6 +1771,82 @@ function getHtmlPage(): string {
               <p style="color: #8b949e; margin: 4px 0 0 0;">BTC only, 10% position, 50x leverage. Follows strong trends when bias score >70%. Exits when bias weakens below 30%.</p>
             </div>
           </div>
+
+          <hr style="border: none; border-top: 1px solid #30363d; margin: 20px 0;">
+
+          <h3 style="color: #f0883e;">🎯 Golden Pocket Strategy</h3>
+          <p style="color: #8b949e; margin-bottom: 12px;">Fibonacci retracement strategy targeting "hype/pump" assets with sudden volatility spikes. Works in <strong style="color: #c9d1d9;">both directions</strong>.</p>
+
+          <h4 style="color: #c9d1d9; margin-bottom: 8px;">How It Works</h4>
+          <ol style="margin: 0 0 16px 0; padding-left: 20px; color: #8b949e; font-size: 13px;">
+            <li><strong style="color: #c9d1d9;">Detect Impulse</strong>: Rapid move ≥5% with 3x normal volume</li>
+            <li><strong style="color: #c9d1d9;">Calculate Fibonacci</strong>: Draw retracement from swing low to swing high (or vice versa)</li>
+            <li><strong style="color: #c9d1d9;">Entry Zone</strong>: "Golden Pocket" = 0.618 to 0.65 retracement level</li>
+            <li><strong style="color: #c9d1d9;">Stop Loss</strong>: Below/above 0.786 level (invalidation)</li>
+            <li><strong style="color: #c9d1d9;">Take Profit</strong>: TP1 at 0.382 (50%), TP2 at swing high/low retest (50%)</li>
+          </ol>
+
+          <h4 style="color: #c9d1d9; margin-bottom: 8px;">Fibonacci Levels</h4>
+          <div style="background: #0d1117; border-radius: 6px; padding: 12px; margin-bottom: 16px; font-size: 12px;">
+            <div style="display: grid; grid-template-columns: 80px 1fr; gap: 4px;">
+              <span style="color: #3fb950;">0.0</span><span style="color: #8b949e;">Swing High (TP2 for longs)</span>
+              <span style="color: #58a6ff;">0.236</span><span style="color: #8b949e;">First retracement level</span>
+              <span style="color: #a371f7;">0.382</span><span style="color: #8b949e;">TP1 level (close 50%)</span>
+              <span style="color: #d29922;">0.5</span><span style="color: #8b949e;">Halfway retracement</span>
+              <span style="color: #f0883e; font-weight: bold;">0.618</span><span style="color: #c9d1d9; font-weight: bold;">Golden Pocket TOP (entry zone)</span>
+              <span style="color: #f0883e; font-weight: bold;">0.65</span><span style="color: #c9d1d9; font-weight: bold;">Golden Pocket BOTTOM (entry zone)</span>
+              <span style="color: #f85149;">0.786</span><span style="color: #8b949e;">Invalidation level (stop loss)</span>
+              <span style="color: #6e7681;">1.0</span><span style="color: #8b949e;">Swing Low (TP2 for shorts)</span>
+            </div>
+          </div>
+
+          <h4 style="color: #c9d1d9; margin-bottom: 8px;">Direction Logic</h4>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 12px; margin-bottom: 16px;">
+            <div style="padding: 10px; background: #0d1117; border-radius: 6px; border-left: 3px solid #3fb950;">
+              <strong style="color: #3fb950;">📈 LONG Setup</strong>
+              <p style="color: #8b949e; margin: 4px 0 0 0; font-size: 11px;">After UP impulse → wait for pullback to golden pocket → buy the dip → target swing high retest</p>
+            </div>
+            <div style="padding: 10px; background: #0d1117; border-radius: 6px; border-left: 3px solid #f85149;">
+              <strong style="color: #f85149;">📉 SHORT Setup</strong>
+              <p style="color: #8b949e; margin: 4px 0 0 0; font-size: 11px;">After DOWN impulse → wait for bounce to golden pocket → short the bounce → target swing low retest</p>
+            </div>
+          </div>
+
+          <h4 style="color: #c9d1d9; margin-bottom: 8px;">Golden Pocket Bot Variants</h4>
+          <div style="display: grid; gap: 8px; font-size: 12px;">
+            <div style="padding: 10px; background: #0d1117; border-radius: 8px; border-left: 3px solid #238636;">
+              <strong style="color: #3fb950;">🛡️ GP Conservative</strong>
+              <p style="color: #8b949e; margin: 4px 0 0 0;">1% position, 5x leverage. Strictest filters (3x volume req). Best for learning the strategy.</p>
+            </div>
+            <div style="padding: 10px; background: #0d1117; border-radius: 8px; border-left: 3px solid #d29922;">
+              <strong style="color: #d29922;">⚖️ GP Standard</strong>
+              <p style="color: #8b949e; margin: 4px 0 0 0;">5% position, 10x leverage. Balanced risk/reward with standard filters.</p>
+            </div>
+            <div style="padding: 10px; background: #0d1117; border-radius: 8px; border-left: 3px solid #f85149;">
+              <strong style="color: #f85149;">🔥 GP Aggressive</strong>
+              <p style="color: #8b949e; margin: 4px 0 0 0;">10% position, 20x leverage. Looser filters, more trades. Higher risk/reward.</p>
+            </div>
+            <div style="padding: 10px; background: #0d1117; border-radius: 8px; border-left: 3px solid #a371f7;">
+              <strong style="color: #a371f7;">🎰 GP YOLO</strong>
+              <p style="color: #8b949e; margin: 4px 0 0 0;">25% position, 50x leverage. Maximum risk. Only for degen plays.</p>
+            </div>
+          </div>
+
+          <h4 style="color: #c9d1d9; margin-top: 16px; margin-bottom: 8px;">Setup States</h4>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 12px;">
+            <div style="padding: 8px; background: #0d1117; border-radius: 6px;">
+              <span style="color: #8b949e;">👀 watching</span> - Approaching golden pocket zone
+            </div>
+            <div style="padding: 8px; background: #0d1117; border-radius: 6px;">
+              <span style="color: #3fb950;">✅ triggered</span> - In golden pocket, entry signal
+            </div>
+            <div style="padding: 8px; background: #0d1117; border-radius: 6px;">
+              <span style="color: #f0883e;">🔥 deep_extreme</span> - In pocket + RSI extreme
+            </div>
+            <div style="padding: 8px; background: #0d1117; border-radius: 6px;">
+              <span style="color: #58a6ff;">↩️ reversing</span> - Price moving toward target
+            </div>
+          </div>
         </div>
       </div>
     </div>

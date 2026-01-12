@@ -489,6 +489,17 @@ export class GoldenPocketBot {
   }
 
   /**
+   * Get total unrealized P&L from all open positions
+   */
+  getUnrealizedPnL(): number {
+    let total = 0;
+    for (const position of this.positions.values()) {
+      total += position.unrealizedPnL || 0;
+    }
+    return total;
+  }
+
+  /**
    * Restore state from persistence
    */
   restoreState(

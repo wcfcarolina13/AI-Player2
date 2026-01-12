@@ -880,6 +880,7 @@ function getFullState() {
                        key === 'gp-aggressive' ? '10% pos, 20x, Fib TP/SL' :
                        '20% pos, 20x, Fib TP/SL',
           balance: bot.getBalance(),
+          unrealizedPnL: bot.getUnrealizedPnL(),
           openPositions: bot.getOpenPositions(),
           closedPositions: bot.getClosedPositions(20),
           stats: bot.getStats(),
@@ -2240,22 +2241,26 @@ function getHtmlPage(): string {
       <div class="stats-grid" style="grid-template-columns: repeat(4, 1fr); margin-bottom: 12px;">
         <div class="stat-box" style="border-left: 3px solid #4caf50;">
           <div class="stat-value" id="gpConservativeBalance" style="font-size: 16px;">$2,000</div>
-          <div class="stat-label">Conservative 5% 10x | <span id="gpConservativePnL" class="positive">$0</span></div>
+          <div class="stat-label">Conservative 5% 10x | <span id="gpConservativePositionCount">0</span> pos</div>
+          <div class="stat-label" style="margin-top: 2px;">Unreal: <span id="gpConservativeUnrealPnL" class="positive">$0</span> | Real: <span id="gpConservativePnL" class="positive">$0</span></div>
           <div class="stat-label" style="margin-top: 2px;"><span id="gpConservativeWinRate">0%</span> win | <span id="gpConservativeTP1Rate">0%</span> TP1</div>
         </div>
         <div class="stat-box" style="border-left: 3px solid #8bc34a;">
           <div class="stat-value" id="gpStandardBalance" style="font-size: 16px;">$2,000</div>
-          <div class="stat-label">Standard 10% 10x | <span id="gpStandardPnL" class="positive">$0</span></div>
+          <div class="stat-label">Standard 10% 10x | <span id="gpStandardPositionCount">0</span> pos</div>
+          <div class="stat-label" style="margin-top: 2px;">Unreal: <span id="gpStandardUnrealPnL" class="positive">$0</span> | Real: <span id="gpStandardPnL" class="positive">$0</span></div>
           <div class="stat-label" style="margin-top: 2px;"><span id="gpStandardWinRate">0%</span> win | <span id="gpStandardTP1Rate">0%</span> TP1</div>
         </div>
         <div class="stat-box" style="border-left: 3px solid #ff9800;">
           <div class="stat-value" id="gpAggressiveBalance" style="font-size: 16px;">$2,000</div>
-          <div class="stat-label">Aggressive 10% 20x | <span id="gpAggressivePnL" class="positive">$0</span></div>
+          <div class="stat-label">Aggressive 10% 20x | <span id="gpAggressivePositionCount">0</span> pos</div>
+          <div class="stat-label" style="margin-top: 2px;">Unreal: <span id="gpAggressiveUnrealPnL" class="positive">$0</span> | Real: <span id="gpAggressivePnL" class="positive">$0</span></div>
           <div class="stat-label" style="margin-top: 2px;"><span id="gpAggressiveWinRate">0%</span> win | <span id="gpAggressiveTP1Rate">0%</span> TP1</div>
         </div>
         <div class="stat-box" style="border-left: 3px solid #f44336;">
           <div class="stat-value" id="gpYoloBalance" style="font-size: 16px;">$2,000</div>
-          <div class="stat-label">YOLO 20% 20x | <span id="gpYoloPnL" class="positive">$0</span></div>
+          <div class="stat-label">YOLO 20% 20x | <span id="gpYoloPositionCount">0</span> pos</div>
+          <div class="stat-label" style="margin-top: 2px;">Unreal: <span id="gpYoloUnrealPnL" class="positive">$0</span> | Real: <span id="gpYoloPnL" class="positive">$0</span></div>
           <div class="stat-label" style="margin-top: 2px;"><span id="gpYoloWinRate">0%</span> win | <span id="gpYoloTP1Rate">0%</span> TP1</div>
         </div>
       </div>
@@ -3348,15 +3353,22 @@ function getHtmlPage(): string {
           if (bot) {
             const balEl = document.getElementById(elementId + 'Balance');
             const pnlEl = document.getElementById(elementId + 'PnL');
+            const unrealEl = document.getElementById(elementId + 'UnrealPnL');
             const winRateEl = document.getElementById(elementId + 'WinRate');
             const tp1RateEl = document.getElementById(elementId + 'TP1Rate');
+            const posCountEl = document.getElementById(elementId + 'PositionCount');
             if (balEl) balEl.textContent = formatCurrency(bot.balance);
             if (pnlEl) {
               pnlEl.textContent = formatCurrency(bot.stats.totalPnL);
               pnlEl.className = bot.stats.totalPnL >= 0 ? 'positive' : 'negative';
             }
+            if (unrealEl) {
+              unrealEl.textContent = formatCurrency(bot.unrealizedPnL || 0);
+              unrealEl.className = (bot.unrealizedPnL || 0) >= 0 ? 'positive' : 'negative';
+            }
             if (winRateEl) winRateEl.textContent = bot.stats.winRate.toFixed(0) + '%';
             if (tp1RateEl) tp1RateEl.textContent = (bot.stats.tp1HitRate || 0).toFixed(0) + '%';
+            if (posCountEl) posCountEl.textContent = (bot.openPositions || []).length;
           }
         }
       }
